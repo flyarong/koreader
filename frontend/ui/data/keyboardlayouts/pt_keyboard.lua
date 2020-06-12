@@ -1,7 +1,9 @@
 return {
-    shiftmode_keys = {["Shift"] = true},
+    min_layer = 1,
+    max_layer = 12,
+    shiftmode_keys = {[""] = true},
     symbolmode_keys = {["Sym"] = true, ["ABC"] = true},
-    utf8mode_keys = {["IM"] = true},
+    utf8mode_keys = {["🌐"] = true},
     umlautmode_keys = {["Äéß"] = true},
     keys = {
         -- first row
@@ -31,8 +33,7 @@ return {
         },
         -- third row
         {  --  1           2       3       4       5       6       7       8       9       10      11      12
-            { label = "Shift",
-              icon = "resources/icons/appbar.arrow.shift.png",
+            { label = "",
               width = 1.5
             },
             { "Z",        "z",    "&",    "7",    "Z",    "z",    "&",    "7",    "Á",    "á",    "Ű",    "ű", },
@@ -42,28 +43,26 @@ return {
             { "B",        "b",    ">",    ".",    "B",    "b",    ">",    ".",    "Ó",    "ó",    "†",    "‡", },
             { "N",        "n",    "‘",    "↑",    "N",    "n",    "‘",    "“",    "Ú",    "ú",    "–",    "—", },
             { "M",        "m",    "’",    "↓",    "M",    "m",    "’",    "”",    "Ç",    "ç",    "…",    "¨", },
-            { label = "Backspace",
-              icon = "resources/icons/appbar.clear.reflect.horizontal.png",
-              width = 1.5
+            { label = "",
+              width = 1.5,
+              bold = false
             },
         },
         -- fourth row
         {
             { "Sym",     "Sym",  "ABC",  "ABC",  "Sym",  "Sym",  "ABC",  "ABC",  "Sym",  "Sym",  "ABC",  "ABC",
               width = 1.5},
-            { label = "IM",
-              icon = "resources/icons/appbar.globe.wire.png",
-            },
+            { label = "🌐", },
             { "Äéß",     "Äéß",  "Äéß",  "Äéß",  "Äéß",  "Äéß",  "Äéß",  "Äéß",  "Äéß",  "Äéß",  "Äéß",  "Äéß", },
             { label = "space",
               " ",        " ",    " ",    " ",    " ",    " ",    " ",    " ",    " ",    " ",    " ",    " ",
                 width = 3.0},
             { ",",        ",",    "“",    "←",    ",",    ",",    "Ё",    "Ё",    ",",    ",",    ",",    ",", },
             { ",",        ".",    "”",    "→",    ",",    ".",    "ё",    "ё",    ",",    ".",    ",",    ".", },
-            { label = "Enter",
+            { label = "⮠",
               "\n",       "\n",   "\n",   "\n",   "\n",   "\n",   "\n",   "\n",   "\n",   "\n",   "\n",   "\n",
-              icon = "resources/icons/appbar.arrow.enter.png",
               width = 1.5,
+              bold = true
             },
         },
     },

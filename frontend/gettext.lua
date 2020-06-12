@@ -34,6 +34,15 @@ local GetText_mt = {
     __index = {}
 }
 
+-- wrapUntranslated() will be overriden by bidi.lua when UI language is RTL,
+-- to wrap untranslated english strings as LTR-isolated segments.
+-- It should do nothing when the UI language is LTR.
+GetText.wrapUntranslated_nowrap = function(text) return text end
+GetText.wrapUntranslated = GetText.wrapUntranslated_nowrap
+-- Note: this won't be possible if we switch from our Lua GetText to
+-- GetText through FFI (but hopefully, RTL languages will be fully
+-- translated by then).
+
 --[[--
 Returns a translation.
 
@@ -48,7 +57,7 @@ Returns a translation.
     local translation = _("A meaningful message.")
 --]]
 function GetText_mt.__call(gettext, msgid)
-    return gettext.translation[msgid] or msgid
+    return gettext.translation[msgid] or gettext.wrapUntranslated(msgid)
 end
 
 local function c_escape(what)
@@ -179,6 +188,7 @@ function GetText_mt.__index.changeLang(new_lang)
     end
 
     local data = {}
+    local fuzzy = false
     local headers
     local what = nil
     while true do
@@ -197,9 +207,14 @@ function GetText_mt.__index.changeLang(new_lang)
                 -- header
                 if not headers and data.msgid == "" then
                     headers = data.msgstr
-                    local plural_forms = data.msgstr:match("Plural%-Forms: (.*);")
+                    local plural_forms = data.msgstr:match("Plural%-Forms: (.*)")
                     local nplurals = plural_forms:match("nplurals=([0-9]+);") or 2
-                    local plurals = plural_forms:match("%((.*)%)")
+                    local plurals = plural_forms:match("plural=%((.*)%);")
+
+                    -- Hardcoded workaround for Romanian which has 3 plural forms.
+                    if plurals == "n == 1) ? 0 : ((n == 0 || n != 1 && n % 100 >= 1 && n % 100 <= 19) ? 1 : 2" then
+                        plurals = "n == 1 ? 0 : (n == 0 || n != 1 && n % 100 >= 1 && n % 100 <= 19) ? 1 : 2"
+                    end
 
                     if not plurals then
                         -- Some languages (e.g., Arabic) may not use parentheses.
@@ -207,7 +222,7 @@ function GetText_mt.__index.changeLang(new_lang)
                         -- to accidentally include junk and seldom relevant.
                         -- We might also be dealing with a language without plurals.
                         -- That would look like `plural=0`.
-                        plurals = plural_forms:match("plural=(.*)")
+                        plurals = plural_forms:match("plural=(.*);")
                     end
 
                     if plurals:find("[^n!=%%<>&:%(%)|?0-9 ]") then
@@ -243,13 +258,18 @@ function GetText_mt.__index.changeLang(new_lang)
                     -- string continuation
                     s = line:match("^%s*\"(.*)\"%s*$")
                 end
-                if what and s then
+                if what and s and not fuzzy then
                     -- unescape \n or msgid won't match
                     s = s:gsub("\\n", "\n")
                     -- unescape " or msgid won't match
                     s = s:gsub('\\"', '"')
                     data[what] = (data[what] or "") .. s
+                else
+                    -- Don't save this fuzzy string and unset fuzzy for the next one.
+                    fuzzy = false
                 end
+            elseif line:match("#, fuzzy") then
+                fuzzy = true
             end
         end
     end
@@ -291,9 +311,9 @@ function GetText_mt.__index.ngettext(msgid, msgid_plural, n)
     local plural = GetText.getPlural(n)
 
     if plural == 0 then
-        return GetText.translation[msgid] and GetText.translation[msgid][plural] or msgid
+        return GetText.translation[msgid] and GetText.translation[msgid][plural] or GetText.wrapUntranslated(msgid)
     else
-        return GetText.translation[msgid] and GetText.translation[msgid][plural] or msgid_plural
+        return GetText.translation[msgid] and GetText.translation[msgid][plural] or GetText.wrapUntranslated(msgid_plural)
     end
 end
 
@@ -324,9 +344,9 @@ function GetText_mt.__index.npgettext(msgctxt, msgid, msgid_plural, n)
     local plural = GetText.getPlural(n)
 
     if plural == 0 then
-        return GetText.context[msgctxt] and GetText.context[msgctxt][msgid] and GetText.context[msgctxt][msgid][plural] or msgid
+        return GetText.context[msgctxt] and GetText.context[msgctxt][msgid] and GetText.context[msgctxt][msgid][plural] or GetText.wrapUntranslated(msgid)
     else
-        return GetText.context[msgctxt] and GetText.context[msgctxt][msgid] and GetText.context[msgctxt][msgid][plural] or msgid_plural
+        return GetText.context[msgctxt] and GetText.context[msgctxt][msgid] and GetText.context[msgctxt][msgid][plural] or GetText.wrapUntranslated(msgid_plural)
     end
 end
 
@@ -357,7 +377,7 @@ See [gettext contexts](https://www.gnu.org/software/gettext/manual/html_node/Con
     local copy_text = C_("Text", "Copy")
 --]]
 function GetText_mt.__index.pgettext(msgctxt, msgid)
-    return GetText.context[msgctxt] and GetText.context[msgctxt][msgid] or msgid
+    return GetText.context[msgctxt] and GetText.context[msgctxt][msgid] or GetText.wrapUntranslated(msgid)
 end
 
 setmetatable(GetText, GetText_mt)

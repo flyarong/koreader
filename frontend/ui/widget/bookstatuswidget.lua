@@ -137,7 +137,7 @@ end
 
 function BookStatusWidget:getStatDays()
     if stats_book.days then
-        return stats_book.days
+        return tostring(stats_book.days)
     else
         return _("N/A")
     end
@@ -293,12 +293,20 @@ function BookStatusWidget:genBookInfoGroup()
 
     local height = img_height
     local width = screen_width - split_span_width - img_width
+
+    -- Get a chance to have title and authors rendered with alternate
+    -- glyphs for the book language
+    local lang = nil
+    if self.props.language and self.props.language ~= "" then
+        lang = self.props.language
+    end
     -- title
     local book_meta_info_group = VerticalGroup:new{
         align = "center",
         VerticalSpan:new{ width = height * 0.2 },
         TextBoxWidget:new{
             text = self.props.title,
+            lang = lang,
             width = width,
             face = self.medium_font_face,
             alignment = "center",
@@ -308,6 +316,7 @@ function BookStatusWidget:genBookInfoGroup()
     -- author
     local text_author = TextBoxWidget:new{
         text = self.props.authors,
+        lang = lang,
         face = self.small_font_face,
         width = width,
         alignment = "center",

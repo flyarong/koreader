@@ -3,7 +3,7 @@
 
     https://github.com/Wiladams/LAPHLibs
 --]]
-local util = require("ffi/util")
+local util = require("util")
 local luxl = require("luxl")
 local ffi = require("ffi")
 
@@ -23,7 +23,7 @@ local function unescape(str)
         if unescape_map[s] then
             return unescape_map[s]
         elseif n == "#" then  -- unescape unicode
-            return util.unichar(tonumber(s))
+            return util.unicodeCodepointToUtf8(tonumber(s))
         else
             return orig
         end
@@ -79,6 +79,9 @@ function OPDSParser:parse(text)
     -- but will kick the ass of luxl
     text = text:gsub("<br>", "<br />")
     text = text:gsub("<br/>", "<br />")
+    -- Same deal with hr
+    text = text:gsub("<hr>", "<hr />")
+    text = text:gsub("<hr/>", "<hr />")
     -- some OPDS catalogs wrap text in a CDATA section, remove it as it causes parsing problems
     text = text:gsub("<!%[CDATA%[(.-)%]%]>", function (s)
         return s:gsub( "%p", {["&"] = "&amp;", ["<"] = "&lt;", [">"] = "&gt;" } )

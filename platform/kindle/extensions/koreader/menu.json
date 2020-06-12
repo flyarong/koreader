@@ -6,6 +6,7 @@
 		"items": [
 		{
 			"name": "Start the filemanager",
+			"if": "\"KindleVoyage\" -m!",
 			"priority": 1,
 			"action": "/mnt/us/koreader/koreader.sh",
 			"params": "--kual /mnt/us/documents",
@@ -13,10 +14,31 @@
 			"internal": "status Start KOReader on the File Manager"
 		},
 		{
+			"name": "Start the filemanager",
+			"if": "\"KindleVoyage\" -m",
+			"priority": 1,
+			"action": "/mnt/us/koreader/koreader.sh",
+			"params": "--kual /mnt/us/documents",
+			"exitmenu": false,
+			"status": false,
+			"internal": "status Start KOReader on the File Manager"
+		},
+		{
 			"name": "Open the last document",
+			"if": "\"KindleVoyage\" -m!",
 			"priority": 2,
 			"action": "/mnt/us/koreader/koreader.sh",
 			"params": "--kual",
+			"status": false,
+			"internal": "status Start KOReader on the last document"
+		},
+		{
+			"name": "Open the last document",
+			"if": "\"KindleVoyage\" -m",
+			"priority": 2,
+			"action": "/mnt/us/koreader/koreader.sh",
+			"params": "--kual",
+			"exitmenu": false,
 			"status": false,
 			"internal": "status Start KOReader on the last document"
 		},
@@ -40,6 +62,7 @@
 		},
 		{
 			"name": "Start the filemanager (ASAP)",
+			"if": "\"KindleVoyage\" -m!",
 			"priority": 5,
 			"action": "/mnt/us/koreader/koreader.sh",
 			"params": "--kual --asap /mnt/us/documents",
@@ -47,10 +70,31 @@
 			"internal": "status Start KOreader on the File Manager ASAP"
 		},
 		{
+			"name": "Start the filemanager (ASAP)",
+			"if": "\"KindleVoyage\" -m",
+			"priority": 5,
+			"action": "/mnt/us/koreader/koreader.sh",
+			"params": "--kual --asap /mnt/us/documents",
+			"exitmenu": false,
+			"status": false,
+			"internal": "status Start KOreader on the File Manager ASAP"
+		},
+		{
 			"name": "Open the last document (ASAP)",
+			"if": "\"KindleVoyage\" -m!",
 			"priority": 6,
 			"action": "/mnt/us/koreader/koreader.sh",
 			"params": "--kual --asap",
+			"status": false,
+			"internal": "status Start KOreader on the last document ASAP"
+		},
+		{
+			"name": "Open the last document (ASAP)",
+			"if": "\"KindleVoyage\" -m",
+			"priority": 6,
+			"action": "/mnt/us/koreader/koreader.sh",
+			"params": "--kual --asap",
+			"exitmenu": false,
 			"status": false,
 			"internal": "status Start KOreader on the last document ASAP"
 		},
@@ -79,66 +123,6 @@
 				"refresh": false,
 				"status": false,
 				"internal": "status Try to install KOreader from scratch . . ."
-			},
-			{
-				"name": "CRe font hinting: Autohint",
-				"if": "\"/mnt/us/koreader/data/cr3.ini\" -f \"/mnt/us/koreader/data/cr3.ini\" \"font.hinting.mode=2\" -g! &&",
-				"priority": 3,
-				"action": "./bin/koreader-ext.sh",
-				"params": "cre_autohint",
-				"exitmenu": false,
-				"checked": true,
-				"refresh": true,
-				"status": false,
-				"internal": "status Setup CRe to use autohinting"
-			},
-			{
-				"name": "CRe font hinting: BCI",
-				"if": "\"/mnt/us/koreader/data/cr3.ini\" -f \"/mnt/us/koreader/data/cr3.ini\" \"font.hinting.mode=1\" -g! &&",
-				"priority": 4,
-				"action": "./bin/koreader-ext.sh",
-				"params": "cre_bci",
-				"exitmenu": false,
-				"checked": true,
-				"refresh": true,
-				"status": false,
-				"internal": "status Setup CRe to use bytecode hinting"
-			},
-			{
-				"name": "CRe font hinting: None",
-				"if": "\"/mnt/us/koreader/data/cr3.ini\" -f \"/mnt/us/koreader/data/cr3.ini\" \"font.hinting.mode=0\" -g! &&",
-				"priority": 5,
-				"action": "./bin/koreader-ext.sh",
-				"params": "cre_nohinting",
-				"exitmenu": false,
-				"checked": true,
-				"refresh": true,
-				"status": false,
-				"internal": "status Setup CRe to forgo font hinting"
-			},
-			{
-				"name": "Enable CRe font kerning",
-				"if": "\"/mnt/us/koreader/data/cr3.ini\" -f \"/mnt/us/koreader/data/cr3.ini\" \"font.kerning.enabled=1\" -g! &&",
-				"priority": 6,
-				"action": "./bin/koreader-ext.sh",
-				"params": "cre_kerning",
-				"exitmenu": false,
-				"checked": true,
-				"refresh": true,
-				"status": false,
-				"internal": "status Setup CRe to enable kerning"
-			},
-			{
-				"name": "Disable CRe font kerning",
-				"if": "\"/mnt/us/koreader/data/cr3.ini\" -f \"/mnt/us/koreader/data/cr3.ini\" \"font.kerning.enabled=0\" -g! &&",
-				"priority": 7,
-				"action": "./bin/koreader-ext.sh",
-				"params": "cre_nokerning",
-				"exitmenu": false,
-				"checked": true,
-				"refresh": true,
-				"status": false,
-				"internal": "status Setup CRe to disable kerning"
 			}
 			]
 		}

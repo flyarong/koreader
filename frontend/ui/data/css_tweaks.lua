@@ -12,7 +12,14 @@ They may have the following optional attributes:
 local _ = require("gettext")
 local C_ = _.pgettext
 
+-- Default globally enabled style tweaks, for new installations
+local DEFAULT_GLOBAL_STYLE_TWEAKS = {}
+-- Display in-page per-specs footnotes for EPUB and FB2:
+DEFAULT_GLOBAL_STYLE_TWEAKS["footnote-inpage_epub_smaller"] = true
+DEFAULT_GLOBAL_STYLE_TWEAKS["footnote-inpage_fb2"] = true
+
 local CssTweaks = {
+    DEFAULT_GLOBAL_STYLE_TWEAKS = DEFAULT_GLOBAL_STYLE_TWEAKS,
     {
         title = C_("Style tweaks category", "Pages"),
         {
@@ -34,6 +41,7 @@ local CssTweaks = {
                 title = _("Ignore vertical margins"),
                 priority = 2,
                 css = [[* { margin-top: 0 !important; margin-bottom: 0 !important; }]],
+                separator = true,
             },
             {
                 id = "padding_horizontal_all_0";
@@ -50,78 +58,81 @@ local CssTweaks = {
             separator = true,
         },
         {
-            id = "titles_page-break-before_avoid ";
-            title = _("Avoid blank page on chapter start"),
-            priority = 2, -- so it can override the one put back by publisher_page-break-before_avoid
-            css = [[h1, h2, h3 { page-break-before: auto !important; }]],
+            title = _("Page breaks and blank pages"),
+            {
+                id = "titles_page-break-before_avoid ";
+                title = _("Avoid blank page on chapter start"),
+                priority = 2, -- so it can override the one put back by publisher_page-break-before_avoid
+                css = [[h1, h2, h3 { page-break-before: auto !important; }]],
 
-        },
-        {
-            id = "docfragment_page-break-before_avoid ";
-            title = _("Avoid blank page on chapter end"),
-            priority = 2, -- so it can override the one put back by publisher_page-break-before_avoid
-            css = [[DocFragment { page-break-before: auto !important; }]],
-        },
-        {
-            id = "publisher_page-breaks_avoid ";
-            title = _("Avoid publisher page breaks"),
-            description = _("Disable all publisher page breaks, keeping only KOReader's epub.css ones.\nWhen combined with the two previous tweaks, all page-breaks are disabled."),
-            css = [[
+            },
+            {
+                id = "docfragment_page-break-before_avoid ";
+                title = _("Avoid blank page on chapter end"),
+                priority = 2, -- so it can override the one put back by publisher_page-break-before_avoid
+                css = [[DocFragment { page-break-before: auto !important; }]],
+            },
+            {
+                id = "publisher_page-breaks_avoid ";
+                title = _("Avoid publisher page breaks"),
+                description = _("Disable all publisher page breaks, keeping only KOReader's epub.css ones.\nWhen combined with the two previous tweaks, all page-breaks are disabled."),
+                css = [[
 * { page-break-before: auto !important; page-break-after: auto !important; }
 /* put back epub.css page-breaks */
 DocFragment { page-break-before: always !important; }
 h1 { -cr-only-if: -epub-document; page-break-before: always !important; }
 h2, h3 { -cr-only-if: legacy -epub-document; page-break-before: always !important; }
 h1, h2, h3, h4, h5, h6 { page-break-after: avoid !important; }
-            ]],
-            separator = true,
-        },
-        {
-            title = _("New page on headings"),
-            {
-                id = "h1_page-break-before_always";
-                title = _("New page on <H1>"),
-                css = [[h1 { page-break-before: always !important; }]],
+                ]],
+                separator = true,
             },
             {
-                id = "h2_page-break-before_always";
-                title = _("New page on <H2>"),
-                css = [[
+                title = _("New page on headings"),
+                {
+                    id = "h1_page-break-before_always";
+                    title = _("New page on <H1>"),
+                    css = [[h1 { page-break-before: always !important; }]],
+                },
+                {
+                    id = "h2_page-break-before_always";
+                    title = _("New page on <H2>"),
+                    css = [[
 h2 { page-break-before: always !important; }
 h1 + h2 { page-break-before: avoid !important; }
-                ]],
-            },
-            {
-                id = "h3_page-break-before_always";
-                title = _("New page on <H3>"),
-                css = [[
+                    ]],
+                },
+                {
+                    id = "h3_page-break-before_always";
+                    title = _("New page on <H3>"),
+                    css = [[
 h3 { page-break-before: always !important; }
 h1 + h3, h2 + h3 { page-break-before: avoid !important; }
-                ]],
-            },
-            {
-                id = "h4_page-break-before_always";
-                title = _("New page on <H4>"),
-                css = [[
+                    ]],
+                },
+                {
+                    id = "h4_page-break-before_always";
+                    title = _("New page on <H4>"),
+                    css = [[
 h4 { page-break-before: always !important; }
 h1 + h4, h2 + h4, h3 + h4 { page-break-before: avoid !important; }
-                ]],
-            },
-            {
-                id = "h5_page-break-before_always";
-                title = _("New page on <H5>"),
-                css = [[
+                    ]],
+                },
+                {
+                    id = "h5_page-break-before_always";
+                    title = _("New page on <H5>"),
+                    css = [[
 h5 { page-break-before: always !important; }
 h1 + h5, h2 + h5, h3 + h5, h4 + h5 { page-break-before: avoid !important; }
-                ]],
-            },
-            {
-                id = "h6_page-break-before_always";
-                title = _("New page on <H6>"),
-                css = [[
+                    ]],
+                },
+                {
+                    id = "h6_page-break-before_always";
+                    title = _("New page on <H6>"),
+                    css = [[
 h6 { page-break-before: always !important; }
 h1 + h6, h2 + h6, h3 + h6, h4 + h6, h5 + h6 { page-break-before: avoid !important; }
-                ]],
+                    ]],
+                },
             },
         },
     },
@@ -204,6 +215,7 @@ You may also want to enable, in the top menu → Gear → Navigation →, Invert
                 title = _("Document direction LTR"),
                 css = [[body { direction: ltr !important; }]],
             },
+            separator = true,
         },
         {
             title = _("Widows and orphans"),
@@ -269,45 +281,70 @@ DocFragment {
             },
         },
         {
-            id = "sub_sup_smaller";
-            title = _("Smaller sub- and superscript"),
-            description = _("Prevent sub- and superscript from affecting line-height."),
-            priority = 5, -- so we can override "font_size_all_inherit"
-            -- https://friendsofepub.github.io/eBookTricks/
-            -- https://github.com/koreader/koreader/issues/3923#issuecomment-386510294
-            css = [[
-sup { font-size: 50% !important; vertical-align: super !important; }
-sub { font-size: 50% !important; vertical-align: sub !important; }
-            ]],
+            title = _("Hyphenation and ligatures"),
+            {
+                id = "hyphenate_all_auto";
+                title = _("Allow hyphenation on all text"),
+                description = _("Allow hyphenation on all text (except headings), in case the publisher has disabled it."),
+                css = [[
+* { hyphens: auto !important; }
+h1, h2, h3, h4, h5, h6 { hyphens: none !important; }
+                ]],
+            },
+            {
+                id = "ligature_all_no_common_ligature";
+                title = _("Disable common ligatures"),
+                description = _("Disable common ligatures, which are enabled by default in 'best' kerning mode."),
+                -- We don't use !important, as this would stop other font-variant properties
+                -- from being applied
+                css = [[
+* { font-variant: no-common-ligatures; }
+                ]],
+            },
             separator = true,
         },
         {
-            id = "hyphenate_all_auto";
-            title = _("Allow hyphenation on all text"),
-            description = _("Allow hyphenation to happen on all text (except headings), in case the publisher has disabled it."),
-            css = [[
-* { hyphens: auto !important; }
-h1, h2, h3, h4, h5, h6 { hyphens: none !important; }
-            ]],
-        },
-        {
-            id = "lineheight_all_inherit";
-            title = _("Ignore publisher line heights"),
-            description = _("Disable line-height specified in embedded styles, and may allow KOReader's line spacing settings to work on books where they would not."),
-            css = [[* { line-height: inherit !important; }]],
-        },
-        {
-            id = "font_family_all_inherit";
-            title = _("Ignore publisher font families"),
-            description = _("Disable font-family specified in embedded styles."),
-            -- we have to use this trick, font-family handling by crengine is a bit complex
-            css = [[* { font-family: "NoSuchFont" !important; }]],
-        },
-        {
-            id = "font_size_all_inherit";
-            title = _("Ignore publisher font sizes"),
-            description = _("Disable font-size specified in embedded styles."),
-            css = [[* { font-size: inherit !important; }]],
+            title = _("Fonts and line heights"),
+            {
+                id = "font_family_all_inherit";
+                title = _("Ignore publisher font families"),
+                description = _("Disable font-family specified in embedded styles."),
+                -- we have to use this trick, font-family handling by crengine is a bit complex
+                css = [[* { font-family: "NoSuchFont" !important; }]],
+            },
+            {
+                id = "font_size_all_inherit";
+                title = _("Ignore publisher font sizes"),
+                description = _("Disable font-size specified in embedded styles."),
+                css = [[* { font-size: inherit !important; }]],
+                separator = true,
+            },
+            {
+                id = "lineheight_all_inherit";
+                title = _("Ignore publisher line heights"),
+                description = _("Disable line-height specified in embedded styles, and may allow KOReader's line spacing settings to work on books where they would not."),
+                css = [[* { line-height: inherit !important; }]],
+            },
+            {
+                id = "lineheight_all_normal_strut_confined";
+                title = _("Enforce steady line heights"),
+                description = _("Prevent inline content like sub- and superscript from changing their paragraph line height."),
+                priority = -5, -- so other -cr-hint can override (this one has effect only on inline content)
+                css = [[* { -cr-hint: strut-confined; }]],
+                separator = true,
+            },
+            {
+                id = "sub_sup_smaller";
+                title = _("Smaller sub- and superscript"),
+                description = _("Prevent sub- and superscript from affecting line-height."),
+                priority = 5, -- so we can override "font_size_all_inherit"
+                -- https://friendsofepub.github.io/eBookTricks/
+                -- https://github.com/koreader/koreader/issues/3923#issuecomment-386510294
+                css = [[
+sup { font-size: 50% !important; vertical-align: super !important; }
+sub { font-size: 50% !important; vertical-align: sub !important; }
+                ]],
+            },
         },
     },
     {
@@ -330,38 +367,97 @@ p {
             separator = true,
         },
         {
-            id = "paragraph_no_indent";
-            title = _("No indentation on first paragraph line"),
-            description = _("Do not indent the first line of paragraphs."),
-            css = [[p { text-indent: 0 !important; }]],
-        },
-        {
-            id = "paragraph_indent";
-            title = _("Indentation on first paragraph line"),
-            description = _("Indentation on the first line of a paragraph is the default, but it may be overridden by publisher styles. This will force KOReader's defaults on common elements."),
-            css = [[
+            title = _("Paragraph first-line indentation"),
+            {
+                id = "paragraph_no_indent";
+                title = _("No indentation on first paragraph line"),
+                description = _("Do not indent the first line of paragraphs."),
+                css = [[p { text-indent: 0 !important; }]],
+                separator = true,
+            },
+            {
+                id = "paragraph_indent";
+                title = _("Indentation on first paragraph line"),
+                description = _("Indentation on the first line of a paragraph is the default, but it may be overridden by publisher styles. This will force KOReader's defaults on common elements."),
+                css = [[
 p { text-indent: 1.2em !important; }
 body, h1, h2, h3, h4, h5, h6, div, li, td, th { text-indent: 0 !important; }
-            ]],
+                ]],
+            },
+            {
+                id = "paragraph_first_no_indent";
+                title = _("No indentation on first paragraph"),
+                description = _("Do not indent the first line of the first paragraph of its container. This might be needed to correctly display drop caps, while still having indentation on following paragraphs."),
+                priority = 2, -- so it can override 'paragraph_indent'
+                css = [[p:first-child { text-indent: 0 !important; }]],
+            },
+            {
+                id = "paragraph_following_no_indent";
+                title = _("No indentation on following paragraphs"),
+                description = _("Do not indent the first line of following paragraphs, but leave the first paragraph of its container untouched."),
+                priority = 2, -- so it can override 'paragraph_indent'
+                css = [[p + p { text-indent: 0 !important; }]],
+            },
+        },
+        {
+            title = _("Spacing between paragraphs"),
+            {
+                id = "paragraph_whitespace";
+                title = _("Spacing between paragraphs"),
+                description = _("Add a line of whitespace between paragraphs."),
+                priority = 5, -- Override "Ignore margins and paddings" below
+                css = [[p + p { margin-top: 1em !important; }]],
+            },
+            {
+                id = "paragraph_whitespace_half";
+                title = _("Spacing between paragraphs (half)"),
+                description = _("Add half a line of whitespace between paragraphs."),
+                priority = 5,
+                css = [[p + p { margin-top: .5em !important; }]],
+            },
+            {
+                id = "paragraph_no_whitespace";
+                title = _("No spacing between paragraphs"),
+                description = _("No whitespace between paragraphs is the default, but it may be overridden by publisher styles. This will re-enable it for paragraphs and list items."),
+                priority = 5,
+                css = [[p, li { margin-top: 0 !important; margin-bottom: 0 !important; }]],
+                separator = true,
+            },
+            {
+                id = "paragraph_no_vertical_padding";
+                title = _("Ignore vertical paragraph padding"),
+                priority = 3, -- Override "Pages > Ignore margin and padding"
+                css = [[p, li { padding-top: 0 !important; padding-bottom: 0 !important; }]],
+            },
+        },
+        {
+            title = _("Horizontal paragraph margins"),
+            {
+                id = "paragraph_no_horizontal_margin";
+                title = _("Ignore horizontal paragraph margins"),
+                priority = 3, -- Override "Pages > Ignore margin and padding"
+                css = [[p, li { margin-left: 0 !important; margin-right: 0 !important; }]],
+            },
+            {
+                id = "paragraph_no_horizontal_padding";
+                title = _("Ignore horizontal paragraph padding"),
+                priority = 3,
+                css = [[p, li { padding-left: 0 !important; padding-right: 0 !important; }]],
+            },
             separator = true,
         },
         {
-            id = "paragraph_whitespace";
-            title = _("Spacing between paragraphs"),
-            description = _("Add a line of whitespace between paragraphs."),
-            css = [[p + p { margin-top: 1em !important; }]],
-        },
-        {
-            id = "paragraph_whitespace_half";
-            title = _("Spacing between paragraphs (half)"),
-            description = _("Add half a line of whitespace between paragraphs."),
-            css = [[p + p { margin-top: .5em !important; }]],
-        },
-        {
-            id = "paragraph_no_whitespace";
-            title = _("No spacing between paragraphs"),
-            description = _("No whitespace between paragraphs is the default, but it may be overridden by publisher styles. This will re-enable it for paragraphs and list items."),
-            css = [[p, li { margin-top: 0 !important; margin-bottom: 0 !important; }]],
+            title = _("List items"),
+            {
+                id = "ul_li_type_disc";
+                title = _("Force bullets with unordered lists"),
+                css = [[ul > li { list-style-type: disc !important; }]],
+            },
+            {
+                id = "ol_li_type_decimal";
+                title = _("Force decimal numbers with ordered lists"),
+                css = [[ol > li { list-style-type: decimal !important; }]],
+            },
         },
     },
     {
@@ -371,6 +467,7 @@ body, h1, h2, h3, h4, h5, h6, div, li, td, th { text-indent: 0 !important; }
             title = _("Full-width tables"),
             description = _("Make table expand to the full width of the page. (Tables with small content now use only the width needed to display that content. This restores the previous behavior.)"),
             css = [[table { width: 100% !important; }]],
+            priority = 2, -- Override next one
         },
         {
             id = "table_td_width_auto";
@@ -383,6 +480,7 @@ body, h1, h2, h3, h4, h5, h6, div, li, td, th { text-indent: 0 !important; }
             title = _("Center small tables"),
             description = _("Horizontally center tables that do not use the full page width."),
             css = [[table { margin-left: auto !important; margin-right: auto !important; }]],
+            priority = 3, -- Override "Pages > Ignore margin and padding"
             separator = true,
         },
         {
@@ -430,6 +528,18 @@ table, tcaption, tr, th, td { border: black solid 1px; border-collapse: collapse
             id = "a_not_bold";
             title = _("Links never bold"),
             css = [[a { font-weight: normal !important; }]],
+            separator = true,
+        },
+        {
+            id = "a_underline";
+            title = _("Links always underlined"),
+            css = [[a[href] { text-decoration: underline !important; }]],
+            -- Have it apply only on real links with a href=, not on anchors
+        },
+        {
+            id = "a_not_underline";
+            title = _("Links never underlined"),
+            css = [[a { text-decoration: none !important; }]],
         },
     },
     {
@@ -525,6 +635,55 @@ This is just an example, that will need to be adapted into a user style tweak.]]
         {
             title = _("In-page footnotes"),
             {
+                title = _("In-page FB2 footnotes"),
+                {
+                    id = "footnote-inpage_fb2";
+                    title = _("In-page FB2 footnotes"),
+                    description = _([[
+Show FB2 footnote text at the bottom of pages that contain links to them.]]),
+                    -- Avoid 75% of 75% in case of nested <section>
+                    css = [[
+body[name="notes"] section {
+    -cr-hint: footnote-inpage;
+    margin: 0 !important;
+}
+body[name="notes"] > section {
+    font-size: 75%;
+}
+                    ]],
+                },
+                {
+                    id = "footnote-inpage_fb2_comments";
+                    title = _("In-page FB2 endnotes"),
+                    description = _([[
+Show FB2 endnote text at the bottom of pages that contain links to them.]]),
+                    css = [[
+body[name="comments"] section {
+    -cr-hint: footnote-inpage;
+    margin: 0 !important;
+}
+body[name="comments"] > section {
+    font-size: 85%;
+}
+                    ]],
+                    separator = true,
+                },
+                {
+                    id = "fb2_footnotes_regular_font_size";
+                    title = _("Keep regular font size"),
+                    description = _([[
+FB2 footnotes and endnotes get a smaller font size when displayed in-page. This allows them to be shown with the normal font size.]]),
+                    css = [[
+body[name="notes"] > section,
+body[name="comments"] > section
+{
+    font-size: 100% !important;
+}
+                    ]],
+                },
+                separator = true,
+            },
+            {
                 id = "footnote-inpage_epub";
                 title = _("In-page EPUB footnotes"),
                 description = _([[
@@ -604,7 +763,9 @@ ol.references > li > .mw-cite-backlink { display: none; }
 Show footnotes with classic class names at the bottom of pages.
 This tweak can be duplicated as a user style tweak when books contain footnotes wrapped with other class names.]]),
                 css = [[
-.footnote, .note, .note1, .ntb, .ntb-txt, .ntb-txt-j
+.footnote, .footnotes, .fn,
+.note, .note1, .note2, .note3,
+.ntb, .ntb-txt, .ntb-txt-j
 {
     -cr-hint: footnote-inpage;
     margin: 0 !important;
@@ -618,7 +779,9 @@ This tweak can be duplicated as a user style tweak when books contain footnotes 
 Show footnotes with classic classname at the bottom of pages.
 This tweak can be duplicated as a user style tweak when books contain footnotes wrapped with other class names.]]),
                 css = [[
-.footnote, .note, .note1, .ntb, .ntb-txt, .ntb-txt-j
+.footnote, .footnotes, .fn,
+.note, .note1, .note2, .note3,
+.ntb, .ntb-txt, .ntb-txt-j
 {
     -cr-hint: footnote-inpage;
     margin: 0 !important;
@@ -639,6 +802,15 @@ This tweak toggles this behavior, and may show the <epub:case> content as plain 
             css = [[
 switch > case    { display: inline; }
 switch > default { display: none; }
+            ]],
+        },
+        {
+            id = "no_pseudo_element_before_after";
+            title = _("Disable before/after pseudo elements"),
+            description = _([[Disable generated text from ::before and ::after pseudo elements, usually used to add cosmetic text around some content.]]),
+            css = [[
+*::before { display: none !important; }
+*::after  { display: none !important; }
             ]],
         },
         {

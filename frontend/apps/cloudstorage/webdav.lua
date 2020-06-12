@@ -1,9 +1,12 @@
+local BD = require("ui/bidi")
 local ConfirmBox = require("ui/widget/confirmbox")
+local DocumentRegistry = require("document/documentregistry")
 local InfoMessage = require("ui/widget/infomessage")
 local MultiInputDialog = require("ui/widget/multiinputdialog")
 local UIManager = require("ui/uimanager")
 local ReaderUI = require("apps/reader/readerui")
 local WebDavApi = require("apps/cloudstorage/webdavapi")
+local util = require("util")
 local _ = require("gettext")
 local Screen = require("device").screen
 local T = require("ffi/util").template
@@ -17,14 +20,15 @@ end
 function WebDav:downloadFile(item, address, username, password, local_path, close)
     local code_response = WebDavApi:downloadFile(address .. WebDavApi:urlEncode( item.url ), username, password, local_path)
     if code_response == 200 then
-        if G_reader_settings:isTrue("show_unsupported") then
+        local __, filename = util.splitFilePathName(local_path)
+        if G_reader_settings:isTrue("show_unsupported") and not DocumentRegistry:hasProvider(filename) then
             UIManager:show(InfoMessage:new{
-                text = T(_("File saved to:\n%1"), local_path),
+                text = T(_("File saved to:\n%1"), BD.filepath(local_path)),
             })
         else
             UIManager:show(ConfirmBox:new{
                 text = T(_("File saved to:\n%1\nWould you like to read the downloaded book now?"),
-                    local_path),
+                    BD.filepath(local_path)),
                 ok_callback = function()
                     close()
                     ReaderUI:showReader(local_path)
@@ -33,7 +37,7 @@ function WebDav:downloadFile(item, address, username, password, local_path, clos
         end
     else
         UIManager:show(InfoMessage:new{
-            text = T(_("Could not save file to:\n%1"), local_path),
+            text = T(_("Could not save file to:\n%1"), BD.filepath(local_path)),
             timeout = 3,
         })
     end
@@ -46,7 +50,7 @@ The start folder is appended to the server path.]])
 
     local hint_name = _("Server display name")
     local text_name = ""
-    local hint_address = _("WebDAV address eg https://example.com/dav")
+    local hint_address = _("WebDAV address, for example https://example.com/dav")
     local text_address = ""
     local hint_username = _("Username")
     local text_username = ""

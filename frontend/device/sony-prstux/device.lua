@@ -1,7 +1,8 @@
 local Generic = require("device/generic/device") -- <= look at this file!
-local logger = require("logger")
+local PluginShare = require("pluginshare")
 local TimeVal = require("ui/timeval")
 local ffi = require("ffi")
+local logger = require("logger")
 
 local function yes() return true end
 local function no() return false end
@@ -14,6 +15,7 @@ local SonyPRSTUX = Generic:new{
     hasWifiManager = yes,
     canReboot = yes,
     canPowerOff = yes,
+    usbPluggedIn = false,
 }
 
 
@@ -64,6 +66,7 @@ function SonyPRSTUX:init()
     self.input.open("/dev/input/event0") -- Keys
     self.input.open("/dev/input/event1") -- touchscreen
     self.input.open("/dev/input/event2") -- power button
+    self.input.open("fake_events") -- usb plug-in/out and charging/not-charging
     self.input:registerEventAdjustHook(adjustTouchEvt)
 
     local rotation_mode = self.screen.ORIENTATION_LANDSCAPE_ROTATED
@@ -125,6 +128,20 @@ end
 
 function SonyPRSTUX:reboot()
     os.execute("reboot")
+end
+
+function SonyPRSTUX:usbPlugIn()
+    self.usb_plugged_in = true
+    PluginShare.pause_auto_suspend = true
+end
+
+function SonyPRSTUX:usbPlugOut()
+    self.usb_plugged_in = false
+    PluginShare.pause_auto_suspend = false
+end
+
+function SonyPRSTUX:usbPluggedIn()
+    return self.usb_plugged_in
 end
 
 function SonyPRSTUX:initNetworkManager(NetworkMgr)

@@ -12,6 +12,10 @@ ifneq (,$(findstring -,$(VERSION)))
 	VERSION:=$(VERSION)_$(shell git describe HEAD | xargs git show -s --format=format:"%cd" --date=short)
 endif
 
+# releases do not contain tests and misc data
+IS_RELEASE := $(if $(or $(EMULATE_READER),$(WIN32)),,1)
+IS_RELEASE := $(if $(or $(IS_RELEASE),$(APPIMAGE),$(DEBIAN)),1,)
+
 ANDROID_ARCH?=arm
 # Use the git commit count as the (integer) Android version code
 ANDROID_VERSION?=$(shell git rev-list --count HEAD)
@@ -20,8 +24,6 @@ ANDROID_NAME?=$(VERSION)
 # set PATH to find CC in managed toolchains
 ifeq ($(TARGET), android)
 	PATH:=$(ANDROID_TOOLCHAIN)/bin:$(PATH)
-else ifeq ($(TARGET), pocketbook)
-	PATH:=$(POCKETBOOK_TOOLCHAIN)/bin:$(PATH)
 endif
 
 MACHINE=$(shell PATH=$(PATH) $(CC) -dumpmachine 2>/dev/null)
@@ -49,6 +51,7 @@ DEBIAN_DIR=$(PLATFORM_DIR)/debian
 KINDLE_DIR=$(PLATFORM_DIR)/kindle
 KOBO_DIR=$(PLATFORM_DIR)/kobo
 POCKETBOOK_DIR=$(PLATFORM_DIR)/pocketbook
+REMARKABLE_DIR=$(PLATFORM_DIR)/remarkable
 SONY_PRSTUX_DIR=$(PLATFORM_DIR)/sony-prstux
 UBUNTUTOUCH_DIR=$(PLATFORM_DIR)/ubuntu-touch
 UBUNTUTOUCH_SDL_DIR:=$(UBUNTUTOUCH_DIR)/ubuntu-touch-sdl
@@ -72,7 +75,9 @@ all: $(if $(ANDROID),,$(KOR_BASE)/$(OUTPUT_DIR)/luajit)
 ifdef ANDROID
 	rm -f android-fdroid-version; echo -e "$(ANDROID_NAME)\n$(ANDROID_VERSION)" > koreader-android-fdroid-latest
 endif
-ifneq ($(or $(EMULATE_READER),$(WIN32)),)
+ifeq ($(IS_RELEASE),1)
+	$(RCP) -fL $(KOR_BASE)/$(OUTPUT_DIR)/. $(INSTALL_DIR)/koreader/.
+else
 	cp -f $(KOR_BASE)/ev_replay.py $(INSTALL_DIR)/koreader/
 	@echo "[*] create symlink instead of copying files in development mode"
 	cd $(INSTALL_DIR)/koreader && \
@@ -82,8 +87,6 @@ ifneq ($(or $(EMULATE_READER),$(WIN32)),)
 		ln -sf ../../../../spec ./front
 	cd $(INSTALL_DIR)/koreader/spec/front/unit && test -e data || \
 		ln -sf ../../test ./data
-else
-	$(RCP) -fL $(KOR_BASE)/$(OUTPUT_DIR)/. $(INSTALL_DIR)/koreader/.
 endif
 	for f in $(INSTALL_FILES); do \
 		ln -sf ../../$$f $(INSTALL_DIR)/koreader/; \
@@ -105,7 +108,7 @@ endif
 	@echo "[*] Installresources"
 	$(RCP) -pL resources/fonts/. $(INSTALL_DIR)/koreader/fonts/.
 	install -d $(INSTALL_DIR)/koreader/{screenshots,data/{dict,tessdata},fonts/host,ota}
-ifeq ($(or $(EMULATE_READER),$(WIN32)),)
+ifeq ($(IS_RELEASE),1)
 	@echo "[*] Clean up, remove unused files for releases"
 	rm -rf $(INSTALL_DIR)/koreader/data/{cr3.ini,cr3skin-format.txt,desktop,devices,manual}
 endif
@@ -181,8 +184,9 @@ kindleupdate: all
 	ln -sf ../$(KINDLE_DIR)/launchpad $(INSTALL_DIR)/
 	ln -sf ../../$(KINDLE_DIR)/koreader.sh $(INSTALL_DIR)/koreader
 	ln -sf ../../$(KINDLE_DIR)/libkohelper.sh $(INSTALL_DIR)/koreader
-	ln -sf ../../../../$(KINDLE_DIR)/libkohelper.sh $(INSTALL_DIR)/extensions/koreader/bin
+	ln -sf ../../../../../$(KINDLE_DIR)/libkohelper.sh $(INSTALL_DIR)/extensions/koreader/bin
 	ln -sf ../../$(COMMON_DIR)/spinning_zsync $(INSTALL_DIR)/koreader
+	ln -sf ../../$(KINDLE_DIR)/wmctrl $(INSTALL_DIR)/koreader
 	# create new package
 	cd $(INSTALL_DIR) && pwd && \
 		zip -9 -r \
@@ -202,7 +206,7 @@ kindleupdate: all
 	# note that the targz file extension is intended to keep ISP from caching
 	# the file, see koreader#1644.
 	cd $(INSTALL_DIR) && \
-		tar -I"gzip --rsyncable" -cah --no-recursion -f ../$(KINDLE_PACKAGE_OTA) \
+		tar --hard-dereference -I"gzip --rsyncable" -cah --no-recursion -f ../$(KINDLE_PACKAGE_OTA) \
 		-T koreader/ota/package.index
 
 KOBO_PACKAGE:=koreader-kobo$(KODEDUG_SUFFIX)-$(VERSION).zip
@@ -233,7 +237,7 @@ koboupdate: all
 		koreader/ota/package.index koreader.png README_kobo.txt
 	# make gzip koboupdate for zsync OTA update
 	cd $(INSTALL_DIR) && \
-		tar -I"gzip --rsyncable" -cah --no-recursion -f ../$(KOBO_PACKAGE_OTA) \
+		tar --hard-dereference -I"gzip --rsyncable" -cah --no-recursion -f ../$(KOBO_PACKAGE_OTA) \
 		-T koreader/ota/package.index
 
 PB_PACKAGE:=koreader-pocketbook$(KODEDUG_SUFFIX)-$(VERSION).zip
@@ -272,7 +276,7 @@ pbupdate: all
 		applications/koreader/ota/package.index system
 	# make gzip pbupdate for zsync OTA update
 	cd $(INSTALL_DIR)/applications && \
-		tar -I"gzip --rsyncable" -cah --no-recursion -f ../../$(PB_PACKAGE_OTA) \
+		tar --hard-dereference -I"gzip --rsyncable" -cah --no-recursion -f ../../$(PB_PACKAGE_OTA) \
 		-T koreader/ota/package.index
 
 utupdate: all
@@ -350,7 +354,6 @@ androidupdate: all
 	# assets are compressed manually and stored inside the APK.
 	cd $(INSTALL_DIR)/koreader && zip -r9 \
 		../../$(ANDROID_LAUNCHER_DIR)/assets/module/koreader-$(VERSION).zip * \
-		--exclude=*fonts/droid* \
 		--exclude=*resources/fonts* \
 		--exclude=*resources/icons/src* \
 		--exclude=*share/man* \
@@ -369,22 +372,59 @@ androidupdate: all
 		koreader-android-$(ANDROID_ARCH)$(KODEDUG_SUFFIX)-$(VERSION).apk
 
 debianupdate: all
-	mkdir -p $(INSTALL_DIR)/debian/usr/share/pixmaps
-	cp -pr resources/koreader.png $(INSTALL_DIR)/debian/usr/share/pixmaps
+	mkdir -pv \
+		$(INSTALL_DIR)/debian/usr/bin \
+		$(INSTALL_DIR)/debian/usr/lib \
+		$(INSTALL_DIR)/debian/usr/share/pixmaps \
+		$(INSTALL_DIR)/debian/usr/share/applications \
+		$(INSTALL_DIR)/debian/usr/share/doc/koreader \
+		$(INSTALL_DIR)/debian/usr/share/man/man1
 
-	mkdir -p $(INSTALL_DIR)/debian/usr/share/applications
-	cp -pr $(DEBIAN_DIR)/koreader.desktop $(INSTALL_DIR)/debian/usr/share/applications
-
-	mkdir -p $(INSTALL_DIR)/debian/usr/bin
-	cp -pr $(DEBIAN_DIR)/koreader.sh $(INSTALL_DIR)/debian/usr/bin/koreader
-
-	mkdir -p $(INSTALL_DIR)/debian/usr/lib
+	cp -pv resources/koreader.png $(INSTALL_DIR)/debian/usr/share/pixmaps
+	cp -pv $(DEBIAN_DIR)/koreader.desktop $(INSTALL_DIR)/debian/usr/share/applications
+	cp -pv $(DEBIAN_DIR)/copyright COPYING $(INSTALL_DIR)/debian/usr/share/doc/koreader
+	cp -pv $(DEBIAN_DIR)/koreader.sh $(INSTALL_DIR)/debian/usr/bin/koreader
 	cp -Lr $(INSTALL_DIR)/koreader $(INSTALL_DIR)/debian/usr/lib
 
-	cd $(INSTALL_DIR)/debian/usr/lib/koreader && pwd && \
-		rm -rf ota cache clipboard screenshots spec && \
-		rm -rf resources/fonts resources/icons/src && \
-		rm -rf ev_replay.py
+	gzip -cn9 $(DEBIAN_DIR)/changelog > $(INSTALL_DIR)/debian/usr/share/doc/koreader/changelog.Debian.gz
+	gzip -cn9 $(DEBIAN_DIR)/koreader.1 > $(INSTALL_DIR)/debian/usr/share/man/man1/koreader.1.gz
+
+	chmod 644 \
+		$(INSTALL_DIR)/debian/usr/share/doc/koreader/changelog.Debian.gz \
+		$(INSTALL_DIR)/debian/usr/share/doc/koreader/copyright \
+		$(INSTALL_DIR)/debian/usr/share/man/man1/koreader.1.gz
+
+	rm -rf \
+		$(INSTALL_DIR)/debian/usr/lib/koreader/{ota,cache,clipboard,screenshots,spec,tools,resources/fonts,resources/icons/src}
+
+REMARKABLE_PACKAGE:=koreader-remarkable$(KODEDUG_SUFFIX)-$(VERSION).zip
+REMARKABLE_PACKAGE_OTA:=koreader-remarkable$(KODEDUG_SUFFIX)-$(VERSION).targz
+remarkableupdate: all
+	# ensure that the binaries were built for ARM
+	file $(INSTALL_DIR)/koreader/luajit | grep ARM || exit 1
+	# remove old package if any
+	rm -f $(REMARKABLE_PACKAGE)
+	# Remarkable scripts
+	cp $(REMARKABLE_DIR)/* $(INSTALL_DIR)/koreader
+	cp $(COMMON_DIR)/spinning_zsync $(INSTALL_DIR)/koreader
+	# create new package
+	cd $(INSTALL_DIR) && \
+	        zip -9 -r \
+	                ../$(REMARKABLE_PACKAGE) \
+	                koreader -x "koreader/resources/fonts/*" \
+	                "koreader/resources/icons/src/*" "koreader/spec/*" \
+	                $(ZIP_EXCLUDE)
+	# generate update package index file
+	zipinfo -1 $(REMARKABLE_PACKAGE) > \
+	        $(INSTALL_DIR)/koreader/ota/package.index
+	echo "koreader/ota/package.index" >> $(INSTALL_DIR)/koreader/ota/package.index
+	# update index file in zip package
+	cd $(INSTALL_DIR) && zip -u ../$(REMARKABLE_PACKAGE) \
+	        koreader/ota/package.index
+	# make gzip remarkable update for zsync OTA update
+	cd $(INSTALL_DIR) && \
+	        tar -I"gzip --rsyncable" -cah --no-recursion -f ../$(REMARKABLE_PACKAGE_OTA) \
+	        -T koreader/ota/package.index
 
 SONY_PRSTUX_PACKAGE:=koreader-sony-prstux$(KODEDUG_SUFFIX)-$(VERSION).zip
 SONY_PRSTUX_PACKAGE_OTA:=koreader-sony-prstux$(KODEDUG_SUFFIX)-$(VERSION).targz
@@ -411,7 +451,7 @@ sony-prstuxupdate: all
 	        koreader/ota/package.index
 	# make gzip sonyprstux update for zsync OTA update
 	cd $(INSTALL_DIR) && \
-	        tar -I"gzip --rsyncable" -cah --no-recursion -f ../$(SONY_PRSTUX_PACKAGE_OTA) \
+	        tar --hard-dereference -I"gzip --rsyncable" -cah --no-recursion -f ../$(SONY_PRSTUX_PACKAGE_OTA) \
 	        -T koreader/ota/package.index
 
 CERVANTES_PACKAGE:=koreader-cervantes$(KODEDUG_SUFFIX)-$(VERSION).zip
@@ -422,8 +462,9 @@ cervantesupdate: all
 	# remove old package if any
 	rm -f $(CERVANTES_PACKAGE)
 	# Cervantes launching scripts
+	cp $(COMMON_DIR)/spinning_zsync $(INSTALL_DIR)/koreader/spinning_zsync.sh
 	cp $(CERVANTES_DIR)/*.sh $(INSTALL_DIR)/koreader
-	cp $(COMMON_DIR)/spinning_zsync $(INSTALL_DIR)/koreader
+	cp $(CERVANTES_DIR)/spinning_zsync $(INSTALL_DIR)/koreader
 	# create new package
 	cd $(INSTALL_DIR) && \
 		zip -9 -r \
@@ -440,7 +481,7 @@ cervantesupdate: all
 	koreader/ota/package.index
 	# make gzip cervantes update for zsync OTA update
 	cd $(INSTALL_DIR) && \
-	tar -I"gzip --rsyncable" -cah --no-recursion -f ../$(CERVANTES_PACKAGE_OTA) \
+	tar --hard-dereference -I"gzip --rsyncable" -cah --no-recursion -f ../$(CERVANTES_PACKAGE_OTA) \
 	-T koreader/ota/package.index
 
 update:
@@ -462,6 +503,8 @@ else ifeq ($(TARGET), pocketbook)
 	make pbupdate
 else ifeq ($(TARGET), sony-prstux)
 	make sony-prstuxupdate
+else ifeq ($(TARGET), remarkable)
+	make remarkableupdate
 else ifeq ($(TARGET), ubuntu-touch)
 	make utupdate
 else ifeq ($(TARGET), debian)
@@ -481,27 +524,21 @@ androiddev: androidupdate
 android-toolchain:
 	$(MAKE) -C $(KOR_BASE) android-toolchain
 
-pocketbook-toolchain:
-	$(MAKE) -C $(KOR_BASE) pocketbook-toolchain
-
 
 # for gettext
 DOMAIN=koreader
 TEMPLATE_DIR=l10n/templates
 XGETTEXT_BIN=xgettext
 
-pot:
+pot: po
 	mkdir -p $(TEMPLATE_DIR)
 	$(XGETTEXT_BIN) --from-code=utf-8 \
 		--keyword=C_:1c,2 --keyword=N_:1,2 --keyword=NC_:1c,2,3 \
 		--add-comments=@translators \
-		reader.lua `find frontend -iname "*.lua"` \
-		`find plugins -iname "*.lua"` \
-		`find tools -iname "*.lua"` \
+		reader.lua `find frontend -iname "*.lua" | sort` \
+		`find plugins -iname "*.lua" | sort` \
+		`find tools -iname "*.lua" | sort` \
 		-o $(TEMPLATE_DIR)/$(DOMAIN).pot
-	# push source file to Transifex
-	$(MAKE) -i -C l10n bootstrap
-	$(MAKE) -C l10n push
 
 po:
 	git submodule update --remote l10n

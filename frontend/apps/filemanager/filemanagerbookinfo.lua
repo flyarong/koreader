@@ -2,6 +2,7 @@
 This module provides a way to display book information (filename and book metadata)
 ]]
 
+local BD = require("ui/bidi")
 local DocSettings = require("docsettings")
 local DocumentRegistry = require("document/documentregistry")
 local ImageViewer = require("ui/widget/imageviewer")
@@ -42,14 +43,28 @@ function BookInfo:show(file, book_props)
 
     local directory, filename = util.splitFilePathName(file)
     local filename_without_suffix, filetype = util.splitFileNameSuffix(filename) -- luacheck: no unused
+    if filetype:lower() == "zip" then
+        local filename_without_sub_suffix, sub_filetype = util.splitFileNameSuffix(filename_without_suffix) -- luacheck: no unused
+        sub_filetype = sub_filetype:lower()
+        local supported_sub_filetypes = { "fb2", "htm", "html", "log", "md", "txt" }
+
+        for __, t in ipairs(supported_sub_filetypes) do
+            if sub_filetype == t then
+                filetype = sub_filetype .. "." .. filetype
+                break
+            end
+        end
+    end
     local file_size = lfs.attributes(file, "size") or 0
+    local file_modification = lfs.attributes(file, "modification") or 0
     local size_f = util.getFriendlySize(file_size)
     local size_b = util.getFormattedSize(file_size)
     local size = string.format("%s (%s bytes)", size_f, size_b)
-    table.insert(kv_pairs, { _("Filename:"), filename })
+    table.insert(kv_pairs, { _("Filename:"), BD.filename(filename) })
     table.insert(kv_pairs, { _("Format:"), filetype:upper() })
     table.insert(kv_pairs, { _("Size:"), size })
-    table.insert(kv_pairs, { _("Directory:"), filemanagerutil.abbreviate(directory) })
+    table.insert(kv_pairs, { _("File date:"), os.date("%Y-%m-%d %H:%M:%S", file_modification) })
+    table.insert(kv_pairs, { _("Directory:"), BD.dirpath(filemanagerutil.abbreviate(directory)) })
     table.insert(kv_pairs, "----")
 
     -- book_props may be provided if caller already has them available
@@ -123,10 +138,20 @@ function BookInfo:show(file, book_props)
 
     local title = book_props.title
     if title == "" or title == nil then title = _("N/A") end
-    table.insert(kv_pairs, { _("Title:"), title })
+    table.insert(kv_pairs, { _("Title:"), BD.auto(title) })
 
     local authors = book_props.authors
-    if authors == "" or authors == nil then authors = _("N/A") end
+    if authors == "" or authors == nil then
+        authors = _("N/A")
+    elseif authors:find("\n") then -- BD auto isolate each author
+        authors = util.splitToArray(authors, "\n")
+        for i=1, #authors do
+            authors[i] = BD.auto(authors[i])
+        end
+        authors = table.concat(authors, "\n")
+    else
+        authors = BD.auto(authors)
+    end
     table.insert(kv_pairs, { _("Authors:"), authors })
 
     local series = book_props.series
@@ -135,7 +160,7 @@ function BookInfo:show(file, book_props)
     else -- Shorten calibre series decimal number (#4.0 => #4)
         series = series:gsub("(#%d+)%.0$", "%1")
     end
-    table.insert(kv_pairs, { _("Series:"), series })
+    table.insert(kv_pairs, { _("Series:"), BD.auto(series) })
 
     local pages = book_props.pages
     if pages == "" or pages == nil then pages = _("N/A") end
@@ -146,7 +171,17 @@ function BookInfo:show(file, book_props)
     table.insert(kv_pairs, { _("Language:"), language })
 
     local keywords = book_props.keywords
-    if keywords == "" or keywords == nil then keywords = _("N/A") end
+    if keywords == "" or keywords == nil then
+        keywords = _("N/A")
+    elseif keywords:find("\n") then -- BD auto isolate each keywords
+        keywords = util.splitToArray(keywords, "\n")
+        for i=1, #keywords do
+            keywords[i] = BD.auto(keywords[i])
+        end
+        keywords = table.concat(keywords, "\n")
+    else
+        keywords = BD.auto(keywords)
+    end
     table.insert(kv_pairs, { _("Keywords:"), keywords })
 
     local description = book_props.description
@@ -157,6 +192,9 @@ function BookInfo:show(file, book_props)
         -- in PDF) be HTML.
         description = util.htmlToPlainTextIfHtml(book_props.description)
     end
+    -- (We don't BD wrap description: it may be multi-lines, and the value we set
+    -- here may be viewed in a TextViewer that has auto_para_direction=true, which
+    -- will show the right thing, that'd we rather not mess with BD wrapping.)
     table.insert(kv_pairs, { _("Description:"), description })
 
     -- Cover image
@@ -186,10 +224,18 @@ function BookInfo:show(file, book_props)
     end
     table.insert(kv_pairs, { _("Cover image:"), _("Tap to display"), callback=viewCoverImage })
 
+    -- Get a chance to have title, authors... rendered with alternate
+    -- glyphs for the book language (e.g. japanese book in chinese UI)
+    local values_lang = nil
+    if book_props.language and book_props.language ~= "" then
+        values_lang = book_props.language
+    end
+
     local widget = KeyValuePage:new{
         title = _("Book information"),
         value_overflow_align = "right",
         kv_pairs = kv_pairs,
+        values_lang = values_lang,
     }
     UIManager:show(widget)
 end

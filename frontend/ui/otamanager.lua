@@ -2,6 +2,7 @@
 Checks for updates on the specified nightly build server.
 ]]
 
+local BD = require("ui/bidi")
 local ConfirmBox = require("ui/widget/confirmbox")
 local DataStorage = require("datastorage")
 local Device = require("device")
@@ -18,20 +19,17 @@ local T = require("ffi/util").template
 local ota_dir = DataStorage:getDataDir() .. "/ota/"
 
 local OTAManager = {
+    -- NOTE: Each URL *MUST* end with a /
     ota_servers = {
-        "http://ota.koreader.rocks:80/",
-        "http://vislab.bjmu.edu.cn:80/apps/koreader/ota/",
+        "http://ota.koreader.rocks/",
         --[[
-        -- NOTE: Because we can't have nice things,
-        --       the HTTP frontend of these OpenStack storage containers doesn't actually properly support
-        --       HTTP/1.1 Range requests when multiple byte ranges are requested: they return bogus data when doing so,
-        --       which confuses zsync, causing it to retry indefinitely instead of aborting...
-        --       c.f., https://github.com/koreader/koreader-base/pull/699
-        "http://koreader-fr.ak-team.com:80/",
-        "http://koreader-pl.ak-team.com:80/",
-        "http://koreader-na.ak-team.com:80/",
+        -- NOTE: Seems down? Ping @chrox ;).
+        "http://vislab.bjmu.edu.cn/apps/koreader/ota/",
         --]]
-        "http://koreader.ak-team.com:80/",
+        "http://koreader-fr.ak-team.com/",
+        "http://koreader-pl.ak-team.com/",
+        "http://koreader-na.ak-team.com/",
+        "http://koreader.ak-team.com/",
     },
     ota_channels = {
         "stable",
@@ -129,6 +127,8 @@ function OTAManager:getOTAModel()
         return "kobo"
     elseif Device:isPocketBook() then
         return "pocketbook"
+    elseif Device:isRemarkable() then
+        return "remarkable"
     elseif Device:isSonyPRSTUX() then
         return "sony-prstux"
     else
@@ -243,13 +243,13 @@ function OTAManager:fetchAndProcessUpdate()
         })
     elseif ota_version then
         local update_message = T(_("Do you want to update?\nInstalled version: %1\nAvailable version: %2"),
-                                 local_version,
-                                 ota_version)
+                                 BD.ltr(local_version),
+                                 BD.ltr(ota_version))
         local update_ok_text = _("Update")
         if ota_version < local_version then
             update_message =  T(_("The currently installed version is newer than the available version.\nWould you still like to continue and downgrade?\nInstalled version: %1\nAvailable version: %2"),
-                                local_version,
-                                ota_version)
+                                BD.ltr(local_version),
+                                BD.ltr(ota_version))
             update_ok_text = _("Downgrade")
         end
 
@@ -260,11 +260,18 @@ function OTAManager:fetchAndProcessUpdate()
                 ok_callback = function()
                     local isAndroid, android = pcall(require, "android")
                     if isAndroid then
-                        -- download the package if not present.
-                        if android.download(link, ota_package) then
+                        -- try to download the package
+                        local ok = android.download(link, ota_package)
+                        if ok == 1 then
                             android.notification(T(_("The file %1 already exists."), ota_package))
-                        else
+                        elseif ok == 0 then
                             android.notification(T(_("Downloading %1"), ota_package))
+                        else
+                            UIManager:show(ConfirmBox:new{
+                                text = _("Your device seems to be unable to download packages.\nRetry using the browser?"),
+                                ok_text = _("Retry"),
+                                ok_callback = function() Device:openLink(link) end,
+                            })
                         end
                     elseif Device:isSDL() then
                         Device:openLink(link)
@@ -301,8 +308,10 @@ function OTAManager:fetchAndProcessUpdate()
                                         timeout = 3,
                                     })
                                     -- Clear the installed package, as well as the complete/incomplete update download
-                                    os.execute("rm " .. self.installed_package)
-                                    os.execute("rm " .. self.updated_package .. "*")
+                                    os.execute("rm -f " .. self.installed_package)
+                                    os.execute("rm -f " .. self.updated_package .. "*")
+                                    -- As well as temporary files, in case zsync went kablooey too early...
+                                    os.execute("rm -f ./rcksum-*")
                                     -- And then relaunch zsync in full download mode...
                                     UIManager:scheduleIn(1, function()
                                         if OTAManager:zsync(true) == 0 then
@@ -319,7 +328,7 @@ function OTAManager:fetchAndProcessUpdate()
                                             UIManager:show(ConfirmBox:new{
                                                 text = _("Error updating KOReader. Would you like to delete temporary files?"),
                                                 ok_callback = function()
-                                                    os.execute("rm " .. ota_dir .. "ko*")
+                                                    os.execute("rm -f " .. ota_dir .. "ko*")
                                                 end,
                                             })
                                         end
@@ -327,7 +336,9 @@ function OTAManager:fetchAndProcessUpdate()
                                 end,
                                 choice2_text = _("Abort"),
                                 choice2_callback = function()
-                                    os.execute("rm " .. ota_dir .. "ko*")
+                                    os.execute("rm -f " .. ota_dir .. "ko*")
+                                    os.execute("rm -f " .. self.updated_package .. "*")
+                                    os.execute("rm -f ./rcksum-*")
                                 end,
                             })
                         end
@@ -387,15 +398,23 @@ end
 
 function OTAManager:zsync(full_dl)
     if full_dl or self:_buildLocalPackage() == 0 then
-        local zsync_wrapper = "zsync"
+        local zsync_wrapper = "zsync2"
+        local use_pipefail = true
         -- With visual feedback if supported...
         if self.can_pretty_print then
             zsync_wrapper = "spinning_zsync"
+            -- And because everything is terrible, we can't check for pipefail's usability in spinning_zsync,
+            -- because older ash versions abort on set -o failures...
+            -- c.f., ko/#5844
+            -- So, instead, check from this side of the fence...
+            -- (remember, os.execute is essentially system(), it goes through sh)
+            use_pipefail = (os.execute("set -o pipefail 2>/dev/null") == 0)
         end
         -- If that's a full-download fallback, drop the input tarball
         if full_dl then
             return os.execute(
-            ("./%s -o '%s' -u '%s' '%s%s'"):format(
+            ("env WITH_PIPEFAIL='%s' ./%s -o '%s' -u '%s' '%s%s'"):format(
+                use_pipefail,
                 zsync_wrapper,
                 self.updated_package,
                 self:getOTAServer(),
@@ -404,7 +423,8 @@ function OTAManager:zsync(full_dl)
             )
         else
             return os.execute(
-            ("./%s -i '%s' -o '%s' -u '%s' '%s%s'"):format(
+            ("env WITH_PIPEFAIL='%s' ./%s -i '%s' -o '%s' -u '%s' '%s%s'"):format(
+                use_pipefail,
                 zsync_wrapper,
                 self.installed_package,
                 self.updated_package,

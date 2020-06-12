@@ -1,3 +1,4 @@
+local BD = require("ui/bidi")
 local ConfirmBox = require("ui/widget/confirmbox")
 local Event = require("ui/event")
 local InfoMessage = require("ui/widget/infomessage")
@@ -206,7 +207,7 @@ function ReaderTypeset:genStyleSheetMenu()
     local style_table = {}
     local obsoleted_table = {}
 
-    table.insert(style_table, getStyleMenuItem(_("Clear all external styles"), ""))
+    table.insert(style_table, getStyleMenuItem(_("None"), ""))
     table.insert(style_table, getStyleMenuItem(_("Auto"), nil, true))
 
     local css_files = {}
@@ -252,7 +253,7 @@ function ReaderTypeset:genStyleSheetMenu()
         text_func = function()
             local text = _("Obsolete")
             if obsoleted_css[self.css] then
-                text = T(_("Obsolete (%1)"), obsoleted_css[self.css])
+                text = T(_("Obsolete (%1)"), BD.filename(obsoleted_css[self.css]))
             end
             if obsoleted_css[G_reader_settings:readSetting("copt_css")] then
                 text = text .. "   ★"
@@ -341,11 +342,14 @@ end
 -- FLOAT_FLOATBOXES                   0x00040000               x   x
 -- DO_NOT_CLEAR_OWN_FLOATS            0x00100000               x   x
 -- ALLOW_EXACT_FLOATS_FOOTPRINTS      0x00200000               x   x
+--
+-- BOX_INLINE_BLOCKS                  0x01000000          x    x   x
+-- COMPLETE_INCOMPLETE_TABLES         0x02000000          x    x   x
 
 local BLOCK_RENDERING_FLAGS = {
     0x00000000, -- legacy block rendering
-    0x00030031, -- flat mode (with prepared floatBoxes, so inlined, to avoid display hash mismatch)
-    0x00375131, -- book mode (floating floatBoxes, limited widths support)
+    0x03030031, -- flat mode (with prepared floatBoxes, so inlined, to avoid display hash mismatch)
+    0x03375131, -- book mode (floating floatBoxes, limited widths support)
     0x7FFFFFFF, -- web mode, all features/flags
 }
 
@@ -361,8 +365,28 @@ function ReaderTypeset:setBlockRenderingMode(mode)
         return
     end
     self.block_rendering_mode = mode
+    if self.ensure_saner_block_rendering_flags then -- see next function
+        -- Don't enable BOX_INLINE_BLOCKS
+        -- inlineBoxes have been around and allowed on older DOM_VERSION
+        -- for a few weeks - let's disable it: it may break highlights
+        -- made during this time, but may resurrect others made during
+        -- a longer previous period of time.
+        flags = bit.band(flags, bit.bnot(0x01000000))
+        -- Don't enable COMPLETE_INCOMPLETE_TABLES, as they may add
+        -- many boxing elements around huge amount of text, and break
+        -- some past highlights made on the non-boxed elements.
+        flags = bit.band(flags, bit.bnot(0x02000000))
+    end
     self.ui.document:setBlockRenderingFlags(flags)
     self.ui:handleEvent(Event:new("UpdatePos"))
+end
+
+function ReaderTypeset:ensureSanerBlockRenderingFlags(mode)
+    -- Called by ReaderRolling:onReadSettings() when old
+    -- DOM version requested, before normalized xpointers,
+    -- asking us to unset some of the flags set previously.
+    self.ensure_saner_block_rendering_flags = true
+    self:setBlockRenderingMode(self.block_rendering_mode)
 end
 
 function ReaderTypeset:toggleImageScaling(toggle)
@@ -450,7 +474,7 @@ end
 
 function ReaderTypeset:makeDefaultStyleSheet(css, text, touchmenu_instance)
     UIManager:show(ConfirmBox:new{
-        text = T( _("Set default style to %1?"), text),
+        text = T( _("Set default style to %1?"), BD.filename(text)),
         ok_callback = function()
             G_reader_settings:saveSetting("copt_css", css)
             if touchmenu_instance then touchmenu_instance:updateItems() end
@@ -534,7 +558,6 @@ Tap to dismiss.]]),
             dismiss_callback = refresh_callback,
         })
     end
-    return true
 end
 
 return ReaderTypeset

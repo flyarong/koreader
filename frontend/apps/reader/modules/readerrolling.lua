@@ -1,3 +1,4 @@
+local BD = require("ui/bidi")
 local Blitbuffer = require("ffi/blitbuffer")
 local ConfirmBox = require("ui/widget/confirmbox")
 local Device = require("device")
@@ -151,6 +152,26 @@ function ReaderRolling:onReadSettings(config)
         end
     end
     self.ui.document:requestDomVersion(config:readSetting("cre_dom_version"))
+    -- If we're using a DOM version without normalized XPointers, some stuff
+    -- may need tweaking:
+    if config:readSetting("cre_dom_version") < cre.getDomVersionWithNormalizedXPointers() then
+        -- Show some warning when styles "display:" have changed that
+        -- bookmarks may break
+        self.using_non_normalized_xpointers = true
+        -- Also tell ReaderTypeset, which ensures block rendering mode,
+        -- that we'd rather have some of its BLOCK_RENDERING_FLAGS disabled
+        -- if an old DOM version is requested, as some flags may "box"
+        -- (into inserted internal elements) long fragment of text,
+        -- which may break previous highlights.
+        self.ui.typeset:ensureSanerBlockRenderingFlags()
+        -- And check if we can migrate to a newest DOM version after
+        -- the book is loaded (unless the user told us not to).
+        if not config:readSetting("cre_keep_old_dom_version") then
+            self.ui:registerPostReadyCallback(function()
+                self:checkXPointersAndProposeDOMVersionUpgrade()
+            end)
+        end
+    end
 
     local last_xp = config:readSetting("last_xpointer")
     local last_per = config:readSetting("last_percent")
@@ -237,12 +258,18 @@ function ReaderRolling:onCloseDocument()
         end
     end
     logger.dbg("cre cache used:", cache_file_path or "none")
+    -- Unknown elements and attributes, uncomment if needed for debugging:
+    -- local elements, attributes, namespaces = self.ui.document:getUnknownEntities()
+    -- if elements ~= "" then logger.info("cre unknown elements: ", elements) end
+    -- if attributes ~= "" then logger.info("cre unknown attributes: ", attributes) end
+    -- if namespaces ~= "" then logger.info("cre unknown namespaces: ", namespaces) end
 end
 
 function ReaderRolling:onCheckDomStyleCoherence()
     if self.ui.document and self.ui.document:isBuiltDomStale() then
         local has_bookmarks_warn_txt = ""
-        if self.ui.bookmark:hasBookmarks() then
+        -- When using an older DOM version, bookmarks may break
+        if self.using_non_normalized_xpointers and self.ui.bookmark:hasBookmarks() then
             has_bookmarks_warn_txt = _("\nNote that this change in styles may render your bookmarks or highlights no more valid.\nIf some of them do not show anymore, you can just revert the change you just made to have them shown again.\n\n")
         end
         UIManager:show(ConfirmBox:new{
@@ -304,7 +331,11 @@ function ReaderRolling:setupTouchZones()
         ratio_w = DDOUBLE_TAP_ZONE_PREV_CHAPTER.w, ratio_h = DDOUBLE_TAP_ZONE_PREV_CHAPTER.h,
     }
 
+    local do_mirror = BD.mirroredUILayout()
     if self.inverse_reading_order then
+        do_mirror = not do_mirror
+    end
+    if do_mirror then
         forward_zone.ratio_x = 1 - forward_zone.ratio_x - forward_zone.ratio_w
         backward_zone.ratio_x = 1 - backward_zone.ratio_x - backward_zone.ratio_w
 
@@ -429,7 +460,7 @@ You can set how many lines are shown.]])
                     precision = "%d",
                     ok_text = _("Set"),
                     title_text =  _("Set overlapped lines"),
-                    text = overlap_lines_help_text,
+                    info_text = overlap_lines_help_text,
                     callback = function(spin)
                         G_reader_settings:saveSetting("copt_overlap_lines", spin.value)
                         touchmenu_instance:updateItems()
@@ -464,13 +495,14 @@ function ReaderRolling:getLastPercent()
 end
 
 function ReaderRolling:onSwipe(_, ges)
-    if ges.direction == "west" then
+    local direction = BD.flipDirectionIfMirroredUILayout(ges.direction)
+    if direction == "west" then
         if self.inverse_reading_order then
             self:onGotoViewRel(-1)
         else
             self:onGotoViewRel(1)
         end
-    elseif ges.direction == "east" then
+    elseif direction == "east" then
         if self.inverse_reading_order then
             self:onGotoViewRel(1)
         else
@@ -597,20 +629,36 @@ function ReaderRolling:onGotoXPointer(xp, marker_xp)
         -- Make it 4/5 of left margin wide (and bigger when huge margin)
         local marker_w = math.floor(math.max(doc_margins["left"] - Screen:scaleBySize(5), doc_margins["left"] * 4/5))
 
-        if self.ui.document:getVisiblePageCount() > 1 and screen_x > Screen:getWidth() / 2 then
-            -- On right page in 2-pages mode
-            -- We could show the marker on the right of the page with:
-            --   screen_x = Screen:getWidth() - marker_w
-            -- But it's best to show it on the left of text, so in
-            -- the middle margin, so it still shows just left of a
-            -- footnote number.
-            -- This is a bit tricky with how the middle margin is sized
-            -- by crengine (see LVDocView::updateLayout() in lvdocview.cpp)
-            screen_x = Screen:getWidth() / 2
-            local page2_x = self.ui.document:getPageOffsetX(self.ui.document:getCurrentPage()+1)
-            marker_w = page2_x + marker_w - screen_x
-        else
-            screen_x = 0
+        if self.ui.document:getVisiblePageCount() > 1 then -- 2-pages mode
+            if screen_x < Screen:getWidth() / 2 then -- On left page
+                if BD.mirroredUILayout() then
+                    -- In the middle margin, on the right of text
+                    -- Same trick as below, assuming page2_x is equal to page 1 right x
+                    screen_x = Screen:getWidth() / 2
+                    local page2_x = self.ui.document:getPageOffsetX(self.ui.document:getCurrentPage()+1)
+                    marker_w = page2_x + marker_w - screen_x
+                    screen_x = screen_x - marker_w
+                else
+                    screen_x = 0 -- In left page left margin
+                end
+            else -- On right page
+                if BD.mirroredUILayout() then
+                    screen_x = Screen:getWidth() - marker_w -- In right page right margin
+                else
+                    -- In the middle margin, on the left of text
+                    -- This is a bit tricky with how the middle margin is sized
+                    -- by crengine (see LVDocView::updateLayout() in lvdocview.cpp)
+                    screen_x = Screen:getWidth() / 2
+                    local page2_x = self.ui.document:getPageOffsetX(self.ui.document:getCurrentPage()+1)
+                    marker_w = page2_x + marker_w - screen_x
+                end
+            end
+        else -- 1-page mode
+            if BD.mirroredUILayout() then
+                screen_x = Screen:getWidth() - marker_w -- In right margin
+            else
+                screen_x = 0 -- In left margin
+            end
         end
 
         self.mark_func = function()
@@ -738,7 +786,7 @@ function ReaderRolling:onUpdatePos()
         return true
     end
     -- Calling this now ensures the re-rendering is done by crengine
-    -- so the delayed updatePos() has good info and can reposition
+    -- so updatePos() has good info and can reposition
     -- the previous xpointer accurately:
     self.ui.document:getCurrentPos()
     -- Otherwise, _readMetadata() would do that, but the positionning
@@ -746,8 +794,7 @@ function ReaderRolling:onUpdatePos()
     -- previously because of some bad setDirty() in ConfigDialog widgets
     -- that were triggering a full repaint of crengine (so, the needed
     -- rerendering) before updatePos() is called.
-    UIManager:scheduleIn(0.1, function () self:updatePos() end)
-    return true
+    self:updatePos()
 end
 
 function ReaderRolling:updatePos()
@@ -767,6 +814,7 @@ function ReaderRolling:updatePos()
         self.ui:handleEvent(Event:new("UpdateToc"))
         self.view.footer:updateFooter()
     end
+    self:updateTopStatusBarMarkers()
     UIManager:setDirty(self.view.dialog, "partial")
     -- Allow for the new rendering to be shown before possibly showing
     -- the "Styles have changes..." ConfirmBox so the user can decide
@@ -794,7 +842,6 @@ function ReaderRolling:onChangeViewMode()
             self:_gotoXPointer(self.xpointer)
         end)
     end
-    return true
 end
 
 function ReaderRolling:onRedrawCurrentView()
@@ -959,6 +1006,15 @@ function ReaderRolling:onSetStatusLine(status_line, on_read_settings)
     self.ui:handleEvent(Event:new("UpdatePos"))
 end
 
+function ReaderRolling:updateTopStatusBarMarkers()
+    if not self.cre_top_bar_enabled then
+        return
+    end
+    local pages = self.ui.document:getPageCount()
+    local ticks = self.ui.toc:getTocTicksForFooter()
+    self.ui.document:setHeaderProgressMarks(pages, ticks)
+end
+
 function ReaderRolling:updateBatteryState()
     if self.view.view_mode == "page" and self.cre_top_bar_enabled then
         logger.dbg("update battery state")
@@ -1062,6 +1118,218 @@ function ReaderRolling:showEngineProgress(percent)
         -- some progress callback for will generate a full
         -- screen refresh.
     end
+end
+
+function ReaderRolling:checkXPointersAndProposeDOMVersionUpgrade()
+    if self.ui.document and self.ui.document:isBuiltDomStale() then
+        -- DOM is not in sync, and some message "Styles have changed
+        -- in such a way" is going to be displayed.
+        -- Wait for things to be saner to migrate.
+        return
+    end
+
+    -- Loop thru all known xpointers holders, and apply
+    -- func(object, key, info_text) to each of them
+    local applyFuncToXPointersSlots = function(func)
+        -- Last position
+        func(self, "xpointer", "last position in book")
+        -- Bookmarks
+        if self.ui.bookmark and self.ui.bookmark.bookmarks and #self.ui.bookmark.bookmarks > 0 then
+            local slots = { "page", "pos0", "pos1" }
+            for _, bookmark in ipairs(self.ui.bookmark.bookmarks) do
+                for _, slot in ipairs(slots) do
+                    func(bookmark, slot, bookmark.notes or "bookmark")
+                end
+            end
+        end
+        -- Highlights
+        if self.view.highlight and self.view.highlight.saved then
+            local slots = { "pos0", "pos1" }
+            for page, items in pairs(self.view.highlight.saved) do
+                if items and #items > 0 then
+                    for _, highlight in ipairs(items) do
+                        for _, slot in ipairs(slots) do
+                            func(highlight, slot, highlight.text or "highlight")
+                        end
+                    end
+                end
+            end
+        end
+    end
+
+    -- Cache and counters
+    local normalized_xpointers = {}
+    local lost_xpointer_info = {}
+    local nb_xpointers = 0
+    local nb_xpointers_found = 0
+    local nb_xpointers_changed = 0
+    local nb_xpointers_lost = 0
+
+    -- To be provided to applyFuncToXPointersSlots()
+    local checkAndCount = function(obj, slot, info)
+        local xp = obj[slot]
+        if not xp then
+            return
+        end
+        if normalized_xpointers[xp] ~= nil then -- already seen
+            return
+        end
+        nb_xpointers = nb_xpointers + 1
+        local nxp = self.ui.document:getNormalizedXPointer(xp)
+        normalized_xpointers[xp] = nxp -- cache it
+        if nxp then
+            nb_xpointers_found = nb_xpointers_found + 1
+            if nxp ~= xp then
+                nb_xpointers_changed = nb_xpointers_changed + 1
+            end
+        else
+            nb_xpointers_lost = nb_xpointers_lost + 1
+            lost_xpointer_info[xp] = info
+        end
+    end
+
+    -- To be provided to applyFuncToXPointersSlots()
+    local migrateXPointer = function(obj, slot, info)
+        local xp = obj[slot]
+        if not xp then
+            return
+        end
+        local new_xp = normalized_xpointers[xp]
+        if new_xp then
+            obj[slot] = new_xp
+        else
+            -- Let lost/not-found XPointer be. There is a small chance that
+            -- it will be found (it it was made before the boxing code moved
+            -- it into a box, it might be a normalized xpointer) but there is
+            -- also a smaller chance that it will map to something completely
+            -- different...
+            -- Flag it, so one can investigate and fix it manually
+            if slot ~= "xpointer" then -- (not for last_xpointer)
+                obj["not_found_not_migrated"] = true
+            end
+        end
+    end
+
+    -- Do the actual xpointers migration, and related changes
+    local upgradeToLatestDOMVersion = function()
+        logger.info("Upgrading book to latest DOM version:")
+
+        -- Backup metadata.lua
+        local cur_dom_version = self.ui.doc_settings:readSetting("cre_dom_version") or "unknown"
+        if self.ui.doc_settings.filepath then
+            local backup_filepath = self.ui.doc_settings.filepath .. ".old_dom" .. tostring(cur_dom_version)
+            if not lfs.attributes(backup_filepath) then -- backup does not yet exist
+                os.rename(self.ui.doc_settings.filepath, backup_filepath)
+                logger.info("  previous docsetting file saved as", backup_filepath)
+            end
+        end
+
+        -- Migrate all XPointers
+        applyFuncToXPointersSlots(migrateXPointer)
+        logger.info(T("  xpointers updated: %1 unchanged, %2 modified, %3 not found let as-is",
+            nb_xpointers_found - nb_xpointers_changed, nb_xpointers_changed, nb_xpointers_lost))
+
+        -- Set latest DOM version, to be used at next load
+        local latest_dom_version = self.ui.document:getLatestDomVersion()
+        self.ui.doc_settings:saveSetting("cre_dom_version", latest_dom_version)
+        logger.info("  cre_dom_version updated to", latest_dom_version)
+
+        -- Switch to default block rendering mode if this book has it set to "legacy",
+        -- unless the user had set the global mode to be "legacy".
+        -- (see ReaderTypeset:onReadSettings() for the logic of block_rendering_mode)
+        local g_block_rendering_mode = G_reader_settings:readSetting("copt_block_rendering_mode")
+        if g_block_rendering_mode ~= 0 then -- default is not "legacy"
+            if not g_block_rendering_mode then -- nil means: use default
+                g_block_rendering_mode = 3 -- default in ReaderTypeset:onReadSettings()
+            end
+            -- This setting is actually saved by self.ui.document.configurable
+            local block_rendering_mode = self.ui.document.configurable.block_rendering_mode
+            if block_rendering_mode == 0 then
+                self.ui.document.configurable.block_rendering_mode = g_block_rendering_mode
+                logger.info("  block_rendering_mode switched to", g_block_rendering_mode)
+            end
+        end
+
+        -- No need for "if doc:hasCacheFile() then doc:invalidateCacheFile()", as
+        -- a change in gDOMVersionRequested has crengine trash previous cache file.
+    end
+
+    -- Check all xpointers
+    applyFuncToXPointersSlots(checkAndCount)
+    logger.info(T("%1 xpointers checked: %2 found (%3 changed) - %4 lost",
+                nb_xpointers, nb_xpointers_found, nb_xpointers_changed, nb_xpointers_lost))
+    if nb_xpointers_lost > 0 then
+        logger.warn("Lost xpointers:")
+        for k, v in pairs(lost_xpointer_info) do
+            logger.warn("  ", k, ":", v)
+        end
+    end
+
+    local text = _([[
+This book was first opened, and has been handled since, by an older version of the rendering code.
+Bookmarks and highlights can be upgraded to the latest version of the code.
+
+%1
+
+Proceed with this upgrade and reload the book?]])
+    local details = {}
+    if nb_xpointers_lost == 0 then
+        table.insert(details, _([[All your bookmarks and highlights are valid and will be available after the migration.]]))
+    else
+        table.insert(details, T(_([[
+Note that %1 (out of %2) xpaths from your bookmarks and highlights aren't currently found in the book, and may have been lost. You might want to toggle Rendering mode between 'legacy' and 'flat', and re-open this book, and see if they are found again, before proceeding.]]),
+            nb_xpointers_lost, nb_xpointers))
+    end
+    if nb_xpointers_changed > 0 then
+        table.insert(details, T(_([[
+Note that %1 (out of %2) xpaths from your bookmarks and highlights have been normalized, and may not work on previous KOReader versions (if you're synchronizing your reading between multiple devices, you'll need to update KOReader on all of them).]]),
+            nb_xpointers_changed, nb_xpointers))
+    end
+    text = T(text, table.concat(details, "\n\n"))
+
+    UIManager:show(ConfirmBox:new{
+        text = text,
+        -- Given the layout of the buttons (Cancel|OK, and a big other button below
+        -- with "Not now"), we don't want cancel_callback to be called when dismissing
+        -- this ConfirmBox by taping outside. So, make it non dismissable.
+        dismissable = false,
+        other_buttons = {{
+            {
+                -- this is the real cancel/do nothing
+                text = _("Not now"),
+            }
+        }},
+        cancel_text = _("Not for this book"),
+        cancel_callback = function()
+            self.ui.doc_settings:saveSetting("cre_keep_old_dom_version", true)
+        end,
+        ok_text = _("Upgrade now"),
+        ok_callback = function()
+            -- Allow for ConfirmBox to be closed before migrating
+            UIManager:scheduleIn(0.5, function ()
+                -- And check we haven't quit reader in these 0.5s
+                if self.ui.document then
+                    -- We'd rather not have any painting between the upgrade
+                    -- and the document reloading (readerview might draw
+                    -- highlights from the migrated xpointers, that would
+                    -- not be found in the document...
+                    local InfoMessage = require("ui/widget/infomessage")
+                    local infomsg = InfoMessage:new{
+                        text = _("Upgrading and reloading book…"),
+                    }
+                    UIManager:show(infomsg)
+                    -- Let this message be shown
+                    UIManager:scheduleIn(2, function ()
+                        UIManager:close(infomsg)
+                        if self.ui.document then
+                            upgradeToLatestDOMVersion()
+                            self.ui:reloadDocument()
+                        end
+                    end)
+                end
+            end)
+        end,
+    })
 end
 
 return ReaderRolling

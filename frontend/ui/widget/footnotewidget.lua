@@ -1,3 +1,4 @@
+local BD = require("ui/bidi")
 local Blitbuffer = require("ffi/blitbuffer")
 local BottomContainer = require("ui/widget/container/bottomcontainer")
 local CenterContainer = require("ui/widget/container/centercontainer")
@@ -63,13 +64,14 @@ body {
     line-height: 1.3;
     text-align: justify;
 }
+/* We keep left and right margin the same so it also displays as expected in RTL */
 h1, h2, h3, h4, h5, h6 { margin: 0; } /* MuPDF: margin: XXem 0 , vary with level */
-blockquote { margin: 0 3em }    /* MuPDF: margin: 1em 40px */
+blockquote { margin: 0 1em; }   /* MuPDF: margin: 1em 40px */
 p   { margin: 0; }              /* MuPDF: margin: 1em 0 */
-ol  { margin: 0.5em 0; }        /* MuPDF: margin: 1em 0; padding: 0 0 0 30pt */
-ul  { margin: 0.5em 0; }        /* MuPDF: margin: 1em 0; padding: 0 0 0 30pt */
-dl  { margin: 0.5em; }          /* MuPDF: margin: 1em 0 */
-dd  { margin-left: 1.3em; }     /* MuPDF: margin: 0 0 0 40px */
+ol  { margin: 0; }              /* MuPDF: margin: 1em 0; padding: 0 0 0 30pt */
+ul  { margin: 0; }              /* MuPDF: margin: 1em 0; padding: 0 0 0 30pt */
+dl  { margin: 0; }              /* MuPDF: margin: 1em 0 */
+dd  { margin: 0 1em; }          /* MuPDF: margin: 0 0 0 40px */
 pre { margin: 0.5em 0; }        /* MuPDF: margin: 1em 0 */
 a   { color: black; }           /* MuPDF: color: #06C; */
 /* MuPDF has no support for text-decoration, so we can't underline links,
@@ -80,8 +82,32 @@ a   { color: black; }           /* MuPDF: color: #06C; */
  * Wikipedia EPUBs, each footnote is a LI */
 body > li { list-style-type: none; }
 
+/* MuPDF always aligns the last line to the left when text-align: justify,
+ * which is wrong with RTL. So cancel justification on RTL elements: they
+ * will be correctly aligned to the right */
+*[dir=rtl] { text-align: initial; }
+
 /* Remove any (possibly multiple) backlinks in Wikipedia EPUBs footnotes */
 .noprint { display: none; }
+
+/* Attempt to display FB2 footnotes as expected (as crengine does, putting
+ * the footnote number on the same line as the first paragraph via its
+ * support of "display: run-in" and a possibly added autoBoxing element) */
+body > section > autoBoxing > *,
+body > section > autoBoxing > title > *,
+body > section > title,
+body > section > title > p,
+body > section > p {
+    display: inline;
+}
+body > section > autoBoxing + p,
+body > section > p + p {
+    display: block;
+}
+body > section > autoBoxing > title,
+body > section > title {
+    font-weight: bold;
+}
 ]]
 
 -- Add this if needed for debugging:
@@ -193,7 +219,11 @@ function FootnoteWidget:init()
     -- bullets in its own left margin. To get a chance to have them
     -- shown, we let MuPDF handle our left margin.
     local html_left_margin = self.doc_margins.left .. "px"
-    local css = T(PAGE_CSS, "0", "0", "0", html_left_margin, -- top right bottom left
+    local html_right_margin = "0"
+    if BD.mirroredUILayout() then
+        html_left_margin, html_right_margin = html_right_margin, html_left_margin
+    end
+    local css = T(PAGE_CSS, "0", html_right_margin, "0", html_left_margin, -- top right bottom left
                     self.font_face, DEFAULT_CSS)
     if self.css then -- add any provided css
         css = css .. "\n" .. self.css
@@ -327,14 +357,15 @@ function FootnoteWidget:onTapClose(arg, ges)
 end
 
 function FootnoteWidget:onSwipeFollow(arg, ges)
-    if ges.direction == "west" then
+    local direction = BD.flipDirectionIfMirroredUILayout(ges.direction)
+    if direction == "west" then
         if self.follow_callback then
             if self.close_callback then
                 self.close_callback(self.height)
             end
             return self.follow_callback()
         end
-    elseif ges.direction == "south" or ges.direction == "east" then
+    elseif direction == "south" or direction == "east" then
         UIManager:close(self)
         -- We can close with swipe down. If footnote is scrollable,
         -- this event will be eaten by ScrollHtmlWidget, and it will
@@ -345,7 +376,7 @@ function FootnoteWidget:onSwipeFollow(arg, ges)
             self.close_callback(self.height)
         end
         return true
-    elseif ges.direction == "north" then
+    elseif direction == "north" then
         -- no use for now
         do end -- luacheck: ignore 541
     else -- diagonal swipe

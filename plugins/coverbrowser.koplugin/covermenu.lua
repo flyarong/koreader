@@ -1,3 +1,4 @@
+local BD = require("ui/bidi")
 local DocumentRegistry = require("document/documentregistry")
 local DocSettings = require("docsettings")
 local FileManagerBookInfo = require("apps/filemanager/filemanagerbookinfo")
@@ -49,6 +50,8 @@ function CoverMenu:updateItems(select_number)
     self:_recalculateDimen()
     self.page_info:resetLayout()
     self.return_button:resetLayout()
+    self.vertical_span:clear()
+    self.content_group:resetLayout()
     -- default to select the first item
     if not select_number then
         select_number = 1
@@ -95,7 +98,7 @@ function CoverMenu:updateItems(select_number)
     self:updatePageInfo(select_number)
 
     if self.show_path then
-        self.path_text:setText(self.path)
+        self.path_text:setText(BD.directory(self.path))
     end
     self.show_parent.dithered = self._has_cover_images
     UIManager:setDirty(self.show_parent, function()

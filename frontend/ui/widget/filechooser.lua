@@ -1,3 +1,4 @@
+local BD = require("ui/bidi")
 local Device = require("device")
 local DocSettings = require("docsettings")
 local DocumentRegistry = require("document/documentregistry")
@@ -55,23 +56,30 @@ function FileChooser:init()
         end
         return true
     end
-    self.list = function(path, dirs, files)
+    self.list = function(path, dirs, files, count_only)
         -- lfs.dir directory without permission will give error
         local ok, iter, dir_obj = pcall(lfs.dir, path)
         if ok then
             for f in iter, dir_obj do
-                if self.show_hidden or not string.match(f, "^%.[^.]") then
+                if count_only then
+                    if self.dir_filter(f) and ((not self.show_hidden and not util.stringStartsWith(f, "."))
+                        or (self.show_hidden and f ~= "." and f ~= ".." and not util.stringStartsWith(f, "._")))
+                    then
+                        table.insert(dirs, true)
+                    end
+                elseif self.show_hidden or not string.match(f, "^%.[^.]") then
                     local filename = path.."/"..f
                     local attributes = lfs.attributes(filename)
                     if attributes ~= nil then
-                        if attributes.mode == "directory" and f ~= "." and f~=".." then
+                        if attributes.mode == "directory" and f ~= "." and f ~= ".." then
                             if self.dir_filter(filename) then
                                 table.insert(dirs, {name = f,
                                                     suffix = getFileNameSuffix(f),
                                                     fullpath = filename,
                                                     attr = attributes})
                             end
-                        elseif attributes.mode == "file" then
+                        -- Always ignore macOS resource forks.
+                        elseif attributes.mode == "file" and not util.stringStartsWith(f, "._") then
                             if self.file_filter == nil or self.file_filter(filename) or self.show_unsupported then
                                 local percent_finished = 0
                                 if self.collate == "percent_unopened_first" or self.collate == "percent_unopened_last" then
@@ -121,7 +129,7 @@ end
 function FileChooser:genItemTableFromPath(path)
     local dirs = {}
     local files = {}
-    local up_folder_arrow = "⬆ ../"
+    local up_folder_arrow = BD.mirroredUILayout() and BD.ltr("../ ⬆") or "⬆ ../"
 
     self.list(path, dirs, files)
 
@@ -209,19 +217,22 @@ function FileChooser:genItemTableFromPath(path)
         local sub_dirs = {}
         local dir_files = {}
         local subdir_path = self.path.."/"..dir.name
-        self.list(subdir_path, sub_dirs, dir_files)
+        self.list(subdir_path, sub_dirs, dir_files, true)
         local num_items = #sub_dirs + #dir_files
         local istr = ffiUtil.template(N_("1 item", "%1 items", num_items), num_items)
         local text
+        local bidi_wrap_func
         if dir.name == ".." then
             text = up_folder_arrow
         elseif dir.name == "." then -- possible with show_current_dir_for_hold
             text = _("Long-press to select current directory")
         else
             text = dir.name.."/"
+            bidi_wrap_func = BD.directory
         end
         table.insert(item_table, {
             text = text,
+            bidi_wrap_func = bidi_wrap_func,
             mandatory = istr,
             path = subdir_path,
             is_go_up = dir.name == ".."
@@ -233,12 +244,14 @@ function FileChooser:genItemTableFromPath(path)
     -- otherwise, show new files in bold
     local show_file_in_bold = G_reader_settings:readSetting("show_file_in_bold")
 
-    for _, file in ipairs(files) do
+    for i = 1, #files do
+        local file = files[i]
         local full_path = self.path.."/"..file.name
         local file_size = lfs.attributes(full_path, "size") or 0
         local sstr = getFriendlySize(file_size)
         local file_item = {
             text = file.name,
+            bidi_wrap_func = BD.filename,
             mandatory = sstr,
             path = full_path
         }
@@ -437,7 +450,7 @@ function FileChooser:showSetProviderButtons(file, filemanager_instance, reader_u
                 if self.set_provider_dialog._check_file_button.checked then
                     UIManager:show(ConfirmBox:new{
                         text = T(_("Always open '%2' with %1?"),
-                                   provider.provider_name, filename_pure),
+                                   provider.provider_name, BD.filename(filename_pure)),
                         ok_text = _("Always"),
                         ok_callback = function()
                             DocumentRegistry:setProvider(file, provider, false)
@@ -485,7 +498,7 @@ function FileChooser:showSetProviderButtons(file, filemanager_instance, reader_u
     end
 
     self.set_provider_dialog = OpenWithDialog:new{
-        title = T(_("Open %1 with:"), filename_pure),
+        title = T(_("Open %1 with:"), BD.filename(filename_pure)),
         radio_buttons = radio_buttons,
         buttons = buttons,
     }

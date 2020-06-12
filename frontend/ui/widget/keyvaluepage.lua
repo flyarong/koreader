@@ -19,6 +19,7 @@ Example:
 
 ]]
 
+local BD = require("ui/bidi")
 local Blitbuffer = require("ffi/blitbuffer")
 local BottomContainer = require("ui/widget/container/bottomcontainer")
 local Button = require("ui/widget/button")
@@ -115,6 +116,7 @@ end
 local KeyValueItem = InputContainer:new{
     key = nil,
     value = nil,
+    value_lang = nil,
     cface = Font:getFace("smallinfofont"),
     tface = Font:getFace("smallinfofontbold"),
     width = nil,
@@ -122,19 +124,13 @@ local KeyValueItem = InputContainer:new{
     textviewer_width = nil,
     textviewer_height = nil,
     value_overflow_align = "left",
+        -- "right": only align right if value overflow 1/2 width
+        -- "right_always": align value right even when small and
+        --                 only key overflows 1/2 width
 }
 
 function KeyValueItem:init()
     self.dimen = Geom:new{w = self.width, h = self.height}
-
-    if self.callback and Device:isTouchDevice() then
-        self.ges_events.Tap = {
-            GestureRange:new{
-                ges = "tap",
-                range = self.dimen,
-            }
-        }
-    end
 
     -- self.value may contain some control characters (\n \t...) that would
     -- be rendered as a square. Replace them with a shorter and nicer '|'.
@@ -145,19 +141,23 @@ function KeyValueItem:init()
 
     local frame_padding = Size.padding.default
     local frame_internal_width = self.width - frame_padding * 2
+    local middle_padding = Size.padding.default -- min enforced padding between key and value
+    local available_width = frame_internal_width - middle_padding
+
     -- Default widths (and position of value widget) if each text fits in 1/2 screen width
-    local key_w = frame_internal_width / 2
+    local key_w = frame_internal_width / 2 - middle_padding
     local value_w = frame_internal_width / 2
 
     local key_widget = TextWidget:new{
         text = self.key,
-        max_width = frame_internal_width,
+        max_width = available_width,
         face = self.tface,
     }
     local value_widget = TextWidget:new{
         text = tvalue,
-        max_width = frame_internal_width,
+        max_width = available_width,
         face = self.cface,
+        lang = self.value_lang,
     }
     local key_w_rendered = key_widget:getWidth()
     local value_w_rendered = value_widget:getWidth()
@@ -165,34 +165,32 @@ function KeyValueItem:init()
     -- As both key_widget and value_width will be in a HorizontalGroup,
     -- and key is always left aligned, we can just tweak the key width
     -- to position the value_widget
-    local value_prepend_space = false
     local value_align_right = false
     local fit_right_align = true -- by default, really right align
 
     if key_w_rendered > key_w or value_w_rendered > value_w then
         -- One (or both) does not fit in 1/2 width
-        if key_w_rendered + value_w_rendered > frame_internal_width then
+        if key_w_rendered + value_w_rendered > available_width then
             -- Both do not fit: one has to be truncated so they fit
             if key_w_rendered >= value_w_rendered then
                 -- Rare case: key larger than value.
                 -- We should have kept our keys small, smaller than 1/2 width.
                 -- If it is larger than value, it's that value is kinda small,
                 -- so keep the whole value, and truncate the key
-                key_w = frame_internal_width - value_w_rendered
+                key_w = available_width - value_w_rendered
             else
                 -- Usual case: value larger than key.
-                -- Keep our small key, fit the value in the remaining width,
-                -- prepend some space to separate them
+                -- Keep our small key, fit the value in the remaining width.
                 key_w = key_w_rendered
-                value_prepend_space = true
             end
             value_align_right = true -- so the ellipsis touches the screen right border
-            if self.value_overflow_align ~= "right" and self.value_align ~= "right" then
+            if self.value_align ~= "right" and self.value_overflow_align ~= "right"
+                    and self.value_overflow_align ~= "right_always" then
                 -- Don't adjust the ellipsis to the screen right border,
                 -- so the left of text is aligned with other truncated texts
                 fit_right_align = false
             end
-            -- Allow for displaying the non-truncated texts with Hold
+            -- Allow for displaying the non-truncated text with Hold
             if Device:isTouchDevice() then
                 self.ges_events.Hold = {
                     GestureRange:new{
@@ -200,32 +198,36 @@ function KeyValueItem:init()
                         range = self.dimen,
                     }
                 }
+                -- If no tap callback, allow for displaying the non-truncated
+                -- text with Tap too
+                if not self.callback then
+                    self.callback = function()
+                        self:onHold()
+                    end
+                end
             end
         else
             -- Both can fit: break the 1/2 widths
-            if self.value_overflow_align == "right" or self.value_align == "right" then
-                key_w = frame_internal_width - value_w_rendered
+            if self.value_align == "right" or self.value_overflow_align == "right_always"
+                    or (self.value_overflow_align == "right" and value_w_rendered > value_w) then
+                key_w = available_width - value_w_rendered
                 value_align_right = true
             else
                 key_w = key_w_rendered
-                value_prepend_space = true
             end
         end
         -- In all the above case, we set the right key_w to include any
-        -- needed in-between padding: value_w is what's left.
-        value_w = frame_internal_width - key_w
+        -- needed additional in-between padding: value_w is what's left.
+        value_w = available_width - key_w
     else
         if self.value_align == "right" then
-            key_w = frame_internal_width - value_w_rendered
+            key_w = available_width - value_w_rendered
             value_w = value_w_rendered
             value_align_right = true
         end
     end
 
-    -- Adjust widgets' max widths and text as needed
-    if value_prepend_space then
-        value_widget:setText(" "..tvalue)
-    end
+    -- Adjust widgets' max widths if needed
     value_widget:setMaxWidth(value_w)
     if fit_right_align and value_align_right and value_widget:getWidth() < value_w then
         -- Because of truncation at glyph boundaries, value_widget
@@ -238,6 +240,15 @@ function KeyValueItem:init()
     -- For debugging positioning:
     -- value_widget = FrameContainer:new{ padding=0, margin=0, bordersize=1, value_widget }
 
+    if self.callback and Device:isTouchDevice() then
+        self.ges_events.Tap = {
+            GestureRange:new{
+                ges = "tap",
+                range = self.dimen,
+            }
+        }
+    end
+
     self[1] = FrameContainer:new{
         padding = frame_padding,
         bordersize = 0,
@@ -249,6 +260,9 @@ function KeyValueItem:init()
                     h = self.height
                 },
                 key_widget,
+            },
+            HorizontalSpan:new{
+                width = middle_padding,
             },
             LeftContainer:new{
                 dimen = {
@@ -288,6 +302,7 @@ function KeyValueItem:onHold()
     local textviewer = TextViewer:new{
         title = self.key,
         text = self.value,
+        lang = self.value_lang,
         width = self.textviewer_width,
         height = self.textviewer_height,
     }
@@ -300,6 +315,7 @@ local KeyValuePage = InputContainer:new{
     title = "",
     width = nil,
     height = nil,
+    values_lang = nil,
     -- index for the first item to show
     show_page = 1,
     use_top_page_count = false,
@@ -334,6 +350,7 @@ function KeyValuePage:init()
     end
 
     -- return button
+    --- @todo: alternative icon if BD.mirroredUILayout()
     self.page_return_arrow = Button:new{
         icon = "resources/icons/appbar.arrow.left.up.png",
         callback = function() self:onReturn() end,
@@ -341,26 +358,34 @@ function KeyValuePage:init()
         show_parent = self,
     }
     -- group for page info
+    local chevron_left = "resources/icons/appbar.chevron.left.png"
+    local chevron_right = "resources/icons/appbar.chevron.right.png"
+    local chevron_first = "resources/icons/appbar.chevron.first.png"
+    local chevron_last = "resources/icons/appbar.chevron.last.png"
+    if BD.mirroredUILayout() then
+        chevron_left, chevron_right = chevron_right, chevron_left
+        chevron_first, chevron_last = chevron_last, chevron_first
+    end
     self.page_info_left_chev = Button:new{
-        icon = "resources/icons/appbar.chevron.left.png",
+        icon = chevron_left,
         callback = function() self:prevPage() end,
         bordersize = 0,
         show_parent = self,
     }
     self.page_info_right_chev = Button:new{
-        icon = "resources/icons/appbar.chevron.right.png",
+        icon = chevron_right,
         callback = function() self:nextPage() end,
         bordersize = 0,
         show_parent = self,
     }
     self.page_info_first_chev = Button:new{
-        icon = "resources/icons/appbar.chevron.first.png",
+        icon = chevron_first,
         callback = function() self:goToPage(1) end,
         bordersize = 0,
         show_parent = self,
     }
     self.page_info_last_chev = Button:new{
-        icon = "resources/icons/appbar.chevron.last.png",
+        icon = chevron_last,
         callback = function() self:goToPage(self.pages) end,
         bordersize = 0,
         show_parent = self,
@@ -447,6 +472,7 @@ function KeyValuePage:init()
 
     local content = OverlapGroup:new{
         dimen = self.dimen:copy(),
+        allow_mirroring = false,
         VerticalGroup:new{
             align = "left",
             self.title_bar,
@@ -504,6 +530,7 @@ function KeyValuePage:_populateItems()
                     width = self.item_width,
                     key = entry[1],
                     value = entry[2],
+                    value_lang = self.values_lang,
                     callback = entry.callback,
                     callback_back = entry.callback_back,
                     textviewer_width = self.textviewer_width,
@@ -558,16 +585,17 @@ function KeyValuePage:onPrevPage()
 end
 
 function KeyValuePage:onSwipe(arg, ges_ev)
-    if ges_ev.direction == "west" then
+    local direction = BD.flipDirectionIfMirroredUILayout(ges_ev.direction)
+    if direction == "west" then
         self:nextPage()
         return true
-    elseif ges_ev.direction == "east" then
+    elseif direction == "east" then
         self:prevPage()
         return true
-    elseif ges_ev.direction == "south" then
+    elseif direction == "south" then
         -- Allow easier closing with swipe down
         self:onClose()
-    elseif ges_ev.direction == "north" then
+    elseif direction == "north" then
         -- no use for now
         do end -- luacheck: ignore 541
     else -- diagonal swipe

@@ -1,3 +1,4 @@
+local BD = require("ui/bidi")
 local CenterContainer = require("ui/widget/container/centercontainer")
 local ConfirmBox = require("ui/widget/confirmbox")
 local Device = require("device")
@@ -58,10 +59,16 @@ function ReaderMenu:init()
     if Device:hasKeys() then
         if Device:isTouchDevice() then
             self.key_events.TapShowMenu = { { "Menu" }, doc = "show menu", }
+            if Device:hasFewKeys() then
+                self.key_events.TapShowMenu = { { { "Menu", "Right" } }, doc = "show menu", }
+            end
         else
             -- map menu key to only top menu because bottom menu is only
             -- designed for touch devices
             self.key_events.ShowReaderMenu = { { "Menu" }, doc = "show menu", }
+            if Device:hasFewKeys() then
+                self.key_events.ShowReaderMenu = { { { "Menu", "Right" } }, doc = "show menu", }
+            end
         end
     end
     self.activation_menu = G_reader_settings:readSetting("activate_menu")
@@ -71,16 +78,7 @@ function ReaderMenu:init()
 end
 
 function ReaderMenu:getPreviousFile()
-    local previous_file = nil
-    local readhistory = require("readhistory")
-    for i=2, #readhistory.hist do -- skip first one which is current book
-        -- skip deleted items kept in history
-        if lfs.attributes(readhistory.hist[i].file, "mode") == "file" then
-            previous_file = readhistory.hist[i].file
-            break
-        end
-    end
-    return previous_file
+    return require("readhistory"):getPreviousFile(self.ui.document.file)
 end
 
 function ReaderMenu:onReaderReady()
@@ -227,7 +225,7 @@ function ReaderMenu:setUpdateItemTable()
                 return _("Open previous document")
             end
             local path, file_name = util.splitFilePathName(previous_file) -- luacheck: no unused
-            return T(_("Previous: %1"), file_name)
+            return T(_("Previous: %1"), BD.filename(file_name))
         end,
         enabled_func = function()
             return self:getPreviousFile() ~= nil
@@ -238,7 +236,7 @@ function ReaderMenu:setUpdateItemTable()
         hold_callback = function()
             local previous_file = self:getPreviousFile()
             UIManager:show(ConfirmBox:new{
-                text = T(_("Would you like to open the previous document: %1?"), previous_file),
+                text = T(_("Would you like to open the previous document: %1?"), BD.filepath(previous_file)),
                 ok_text = _("OK"),
                 ok_callback = function()
                     self.ui:switchDocument(previous_file)
@@ -373,10 +371,10 @@ function ReaderMenu:_getTabIndexFromLocation(ges)
         return self.last_tab_index
     -- if the start position is far right
     elseif ges.pos.x > 2 * Screen:getWidth() / 3 then
-        return #self.tab_item_table
+        return BD.mirroredUILayout() and 1 or #self.tab_item_table
     -- if the start position is far left
     elseif ges.pos.x < Screen:getWidth() / 3 then
-        return 1
+        return BD.mirroredUILayout() and #self.tab_item_table or 1
     -- if center return the last index
     else
         return self.last_tab_index

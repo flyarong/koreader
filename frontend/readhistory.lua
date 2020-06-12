@@ -1,10 +1,11 @@
 local DataStorage = require("datastorage")
 local DocSettings = require("docsettings")
 local dump = require("dump")
+local ffiutil = require("ffi/util")
 local getFriendlySize = require("util").getFriendlySize
-local joinPath = require("ffi/util").joinPath
+local joinPath = ffiutil.joinPath
 local lfs = require("libs/libkoreader-lfs")
-local realpath = require("ffi/util").realpath
+local realpath = ffiutil.realpath
 
 local history_file = joinPath(DataStorage:getDataDir(), "history.lua")
 
@@ -83,14 +84,15 @@ end
 function ReadHistory:_flush()
     assert(self ~= nil)
     local content = {}
-    for k, v in pairs(self.hist) do
-        content[k] = {
+    for _, v in ipairs(self.hist) do
+        table.insert(content, {
             time = v.time,
             file = v.file
-        }
+        })
     end
     local f = io.open(history_file, "w")
     f:write("return " .. dump(content) .. "\n")
+    ffiutil.fsyncOpenedFile(f) -- force flush to the storage device
     f:close()
 end
 
@@ -106,7 +108,8 @@ function ReadHistory:_read()
     self.last_read_time = history_file_modification_time
     local ok, data = pcall(dofile, history_file)
     if ok and data then
-        for k, v in pairs(data) do
+        self.hist = {}
+        for _, v in ipairs(data) do
             table.insert(self.hist, buildEntry(v.time, v.file))
         end
     end
@@ -139,6 +142,60 @@ function ReadHistory:_init()
     self:reload()
 end
 
+function ReadHistory:ensureLastFile()
+    local last_existing_file = nil
+    for i=1, #self.hist do
+        if lfs.attributes(self.hist[i].file, "mode") == "file" then
+            last_existing_file = self.hist[i].file
+            break
+        end
+    end
+    G_reader_settings:saveSetting("lastfile", last_existing_file)
+end
+
+function ReadHistory:getLastFile()
+    self:ensureLastFile()
+    return G_reader_settings:readSetting("lastfile")
+end
+
+function ReadHistory:getPreviousFile(current_file)
+    -- Get last or previous file in history that is not current_file
+    -- (self.ui.document.file, probided as current_file, might have
+    -- been removed from history)
+    if not current_file then
+        current_file = G_reader_settings:readSetting("lastfile")
+    end
+    for i=1, #self.hist do
+        -- skip current document and deleted items kept in history
+        local file = self.hist[i].file
+        if file ~= current_file and lfs.attributes(file, "mode") == "file" then
+            return file
+        end
+    end
+end
+
+function ReadHistory:fileDeleted(path)
+    if G_reader_settings:readSetting("autoremove_deleted_items_from_history") then
+        self:removeItemByPath(path)
+    else
+        -- Make it dimed
+        for i=1, #self.hist do
+            if self.hist[i].file == path then
+                self.hist[i].dim = true
+                break
+            end
+        end
+        self:ensureLastFile()
+    end
+end
+
+function ReadHistory:fileSettingsPurged(path)
+    if G_reader_settings:readSetting("autoremove_deleted_items_from_history") then
+        -- Also remove it from history on purge when that setting is enabled
+        self:removeItemByPath(path)
+    end
+end
+
 function ReadHistory:clearMissing()
     assert(self ~= nil)
     for i = #self.hist, 1, -1 do
@@ -146,6 +203,7 @@ function ReadHistory:clearMissing()
             table.remove(self.hist, i)
         end
     end
+    self:ensureLastFile()
 end
 
 function ReadHistory:removeItemByPath(path)
@@ -156,6 +214,7 @@ function ReadHistory:removeItemByPath(path)
             break
         end
     end
+    self:ensureLastFile()
 end
 
 function ReadHistory:updateItemByPath(old_path, new_path)
@@ -163,6 +222,7 @@ function ReadHistory:updateItemByPath(old_path, new_path)
     for i = #self.hist, 1, -1 do
         if self.hist[i].file == old_path then
             self.hist[i].file = new_path
+            self.hist[i].text = new_path:gsub(".*/", "")
             self:_flush()
             self.hist[i].callback = function()
                 local ReaderUI = require("apps/reader/readerui")
@@ -171,6 +231,10 @@ function ReadHistory:updateItemByPath(old_path, new_path)
             break
         end
     end
+    if G_reader_settings:readSetting("lastfile") == old_path then
+        G_reader_settings:saveSetting("lastfile", new_path)
+    end
+    self:ensureLastFile()
 end
 
 function ReadHistory:removeItem(item)
@@ -179,6 +243,7 @@ function ReadHistory:removeItem(item)
     os.remove(DocSettings:getHistoryPath(item.file))
     self:_indexing(item.index)
     self:_flush()
+    self:ensureLastFile()
 end
 
 function ReadHistory:addItem(file)
@@ -196,13 +261,7 @@ function ReadHistory:addItem(file)
         self:_sort()
         self:_reduce()
         self:_flush()
-    end
-end
-
-function ReadHistory:setDeleted(item)
-    assert(self ~= nil)
-    if self.hist[item.index] then
-        self.hist[item.index].dim = true
+        G_reader_settings:saveSetting("lastfile", file)
     end
 end
 

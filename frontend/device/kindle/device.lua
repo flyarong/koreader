@@ -11,7 +11,15 @@ local function kindleEnableWifi(toggle)
         lipc_handle = lipc.init("com.github.koreader.networkmgr")
     end
     if lipc_handle then
-        lipc_handle:set_int_property("com.lab126.cmd", "wirelessEnable", toggle)
+        -- Be extremely thorough... c.f., #6019
+        -- NOTE: I *assume* this'll also ensure we prefer WiFi over 3G/4G, which is a plus in my book...
+        if toggle == 1 then
+            lipc_handle:set_int_property("com.lab126.cmd", "wirelessEnable", 1)
+            lipc_handle:set_int_property("com.lab126.wifid", "enable", 1)
+        else
+            lipc_handle:set_int_property("com.lab126.wifid", "enable", 0)
+            lipc_handle:set_int_property("com.lab126.cmd", "wirelessEnable", 0)
+        end
         lipc_handle:close()
     else
         -- No liblipclua on FW < 5.x ;)
@@ -86,6 +94,8 @@ local Kindle = Generic:new{
     hasOTAUpdates = yes,
     -- NOTE: HW inversion is generally safe on mxcfb Kindles
     canHWInvert = yes,
+    -- NOTE: Newer devices will turn the frontlight off at 0
+    canTurnFrontlightOff = yes,
 }
 
 function Kindle:initNetworkManager(NetworkMgr)
@@ -142,7 +152,7 @@ function Kindle:usbPlugIn()
     -- NOTE: We cannot support running in USBMS mode (we cannot, we live on the partition being exported!).
     --       But since that's the default state of the Kindle system, we have to try to make nice...
     --       To that end, we're currently SIGSTOPping volumd to inhibit the system's USBMS mode handling.
-    --       It's not perfect (f.g., if the system is setup for USBMS and not USBNet,
+    --       It's not perfect (e.g., if the system is setup for USBMS and not USBNet,
     --       the frontlight will be turned off when plugged in), but it at least prevents users from completely
     --       shooting themselves in the foot (c.f., https://github.com/koreader/koreader/issues/3220)!
     --       On the upside, we don't have to bother waking up the WM to show us the USBMS screen :D.
@@ -151,15 +161,42 @@ function Kindle:usbPlugIn()
 end
 
 function Kindle:intoScreenSaver()
-    local Screensaver = require("ui/screensaver")
-    if self:supportsScreensaver() then
-        -- NOTE: Meaning this is not a SO device ;)
-        if self.screen_saver_mode == false then
+    if self.screen_saver_mode == false then
+        if self:supportsScreensaver() then
+            -- NOTE: Meaning this is not a SO device ;)
+            local Screensaver = require("ui/screensaver")
+            -- NOTE: Pilefered from Device:onPowerEvent @ frontend/device/generic/device.lua
+            -- Mostly always suspend in Portrait/Inverted Portrait mode...
+            -- ... except when we just show an InfoMessage or when the screensaver
+            -- is disabled, as it plays badly with Landscape mode (c.f., #4098 and #5290)
+            local screensaver_type = G_reader_settings:readSetting("screensaver_type")
+            if screensaver_type ~= "message" and screensaver_type ~= "disable" then
+                self.orig_rotation_mode = self.screen:getRotationMode()
+                -- Leave Portrait & Inverted Portrait alone, that works just fine.
+                if bit.band(self.orig_rotation_mode, 1) == 1 then
+                    -- i.e., only switch to Portrait if we're currently in *any* Landscape orientation (odd number)
+                    self.screen:setRotationMode(0)
+                else
+                    self.orig_rotation_mode = nil
+                end
+
+                -- On eInk, if we're using a screensaver mode that shows an image,
+                -- flash the screen to white first, to eliminate ghosting.
+                if self:hasEinkScreen() and
+                screensaver_type == "cover" or screensaver_type == "random_image" or
+                screensaver_type == "image_file" then
+                    if not G_reader_settings:isTrue("screensaver_no_background") then
+                        self.screen:clear()
+                    end
+                    self.screen:refreshFull()
+                end
+            else
+                -- nil it, in case user switched ScreenSaver modes during our lifetime.
+                self.orig_rotation_mode = nil
+            end
             Screensaver:show()
-        end
-    else
-        -- Let the native system handle screensavers on SO devices...
-        if self.screen_saver_mode == false then
+        else
+            -- Let the native system handle screensavers on SO devices...
             if os.getenv("AWESOME_STOPPED") == "yes" then
                 os.execute("killall -cont awesome")
             end
@@ -171,19 +208,26 @@ end
 
 function Kindle:outofScreenSaver()
     if self.screen_saver_mode == true then
-        local Screensaver = require("ui/screensaver")
         if self:supportsScreensaver() then
+            local Screensaver = require("ui/screensaver")
+            -- Restore to previous rotation mode, if need be.
+            if self.orig_rotation_mode then
+                self.screen:setRotationMode(self.orig_rotation_mode)
+            end
             Screensaver:close()
+            -- And redraw everything in case the framework managed to screw us over...
+            local UIManager = require("ui/uimanager")
+            UIManager:nextTick(function() UIManager:setDirty("all", "full") end)
         else
             -- Stop awesome again if need be...
             if os.getenv("AWESOME_STOPPED") == "yes" then
                 os.execute("killall -stop awesome")
             end
+            local UIManager = require("ui/uimanager")
+            -- NOTE: We redraw after a slightly longer delay to take care of the potentially dynamic ad screen...
+            --       This is obviously brittle as all hell. Tested on a slow-ass PW1.
+            UIManager:scheduleIn(1.5, function() UIManager:setDirty("all", "full") end)
         end
-        local UIManager = require("ui/uimanager")
-        -- NOTE: If we *really* wanted to avoid the framework seeping through, we could use tickAfterNext instead,
-        --       at the cost of an extra flashing update...
-        UIManager:nextTick(function() UIManager:setDirty("all", "full") end)
     end
     self.powerd:afterResume()
     self.screen_saver_mode = false
@@ -279,6 +323,7 @@ local KindlePaperWhite = Kindle:new{
     model = "KindlePaperWhite",
     isTouchDevice = yes,
     hasFrontlight = yes,
+    canTurnFrontlightOff = no,
     display_dpi = 212,
     touch_dev = "/dev/input/event0",
 }
@@ -287,6 +332,7 @@ local KindlePaperWhite2 = Kindle:new{
     model = "KindlePaperWhite2",
     isTouchDevice = yes,
     hasFrontlight = yes,
+    canTurnFrontlightOff = no,
     display_dpi = 212,
     touch_dev = "/dev/input/event1",
 }
@@ -301,6 +347,7 @@ local KindleVoyage = Kindle:new{
     model = "KindleVoyage",
     isTouchDevice = yes,
     hasFrontlight = yes,
+    canTurnFrontlightOff = no,
     hasKeys = yes,
     display_dpi = 300,
     touch_dev = "/dev/input/event1",
@@ -310,6 +357,7 @@ local KindlePaperWhite3 = Kindle:new{
     model = "KindlePaperWhite3",
     isTouchDevice = yes,
     hasFrontlight = yes,
+    canTurnFrontlightOff = no,
     display_dpi = 300,
     touch_dev = "/dev/input/event1",
 }

@@ -2,6 +2,7 @@
 @module koplugin.wallabag
 ]]
 
+local BD = require("ui/bidi")
 local DataStorage = require("datastorage")
 local DocSettings = require("docsettings")
 local Event = require("ui/event")
@@ -11,8 +12,11 @@ local InfoMessage = require("ui/widget/infomessage")
 local InputDialog = require("ui/widget/inputdialog")
 local JSON = require("json")
 local LuaSettings = require("frontend/luasettings")
+local Math = require("optmath")
+local MultiConfirmBox = require("ui/widget/multiconfirmbox")
 local MultiInputDialog = require("ui/widget/multiinputdialog")
 local NetworkMgr = require("ui/network/manager")
+local ReadHistory = require("readhistory")
 local UIManager = require("ui/uimanager")
 local WidgetContainer = require("ui/widget/container/widgetcontainer")
 local filemanagerutil = require("apps/filemanager/filemanagerutil")
@@ -80,6 +84,8 @@ function Wallabag:init()
     if self.wb_settings.data.wallabag.articles_per_sync ~= nil then
         self.articles_per_sync = self.wb_settings.data.wallabag.articles_per_sync
     end
+    self.remove_finished_from_history = self.wb_settings.data.wallabag.remove_finished_from_history or false
+    self.download_queue = self.wb_settings.data.wallabag.download_queue or {}
 
     -- workaround for dateparser only available if newsdownloader is active
     self.is_dateparser_available = false
@@ -163,7 +169,7 @@ function Wallabag:addToMainMenu(menu_items)
                             else
                                 path = filemanagerutil.abbreviate(self.directory)
                             end
-                            return T(_("Set download directory (%1)"), path)
+                            return T(_("Set download directory (%1)"), BD.dirpath(path))
                         end,
                         keep_menu_open = true,
                         callback = function(touchmenu_instance)
@@ -238,6 +244,17 @@ function Wallabag:addToMainMenu(menu_items)
                         end,
                     },
                     {
+                        text = _("Remove finished articles from history"),
+                        keep_menu_open = true,
+                        checked_func = function()
+                            return self.remove_finished_from_history or false
+                        end,
+                        callback = function()
+                            self.remove_finished_from_history = not self.remove_finished_from_history
+                            self:saveSettings()
+                        end,
+                    },
+                    {
                         text = _("Help"),
                         keep_menu_open = true,
                         callback = function()
@@ -261,7 +278,7 @@ The 'Synchronize remotely deleted files' option will remove local files that no 
 
 More details: https://wallabag.org
 
-Downloads to directory: %1]]), filemanagerutil.abbreviate(self.directory))
+Downloads to directory: %1]]), BD.dirpath(filemanagerutil.abbreviate(self.directory)))
                     })
                 end,
             },
@@ -276,9 +293,27 @@ function Wallabag:getBearerToken()
         return s == nil or s == ""
     end
 
-    if isempty(self.server_url) or isempty(self.username) or isempty(self.password)  or isempty(self.client_id) or isempty(self.client_secret) or isempty(self.directory) then
-        UIManager:show(InfoMessage:new{
-            text = _("Please configure the server and local settings.")
+    local server_empty = isempty(self.server_url) or isempty(self.username) or isempty(self.password) or isempty(self.client_id) or isempty(self.client_secret)
+    local directory_empty = isempty(self.directory)
+    if server_empty or directory_empty then
+        UIManager:show(MultiConfirmBox:new{
+            text = _("Please configure the server settings and set a download folder."),
+            choice1_text_func = function()
+                if server_empty then
+                    return _("Server (★)")
+                else
+                    return _("Server")
+                end
+            end,
+            choice1_callback = function() self:editServerSettings() end,
+            choice2_text_func = function()
+                if directory_empty then
+                    return _("Folder (★)")
+                else
+                    return _("Folder")
+                end
+            end,
+            choice2_callback = function() self:setDownloadDirectory() end,
         })
         return false
     end
@@ -350,7 +385,7 @@ function Wallabag:getArticleList()
                           .. "&page=" .. page
                           .. "&perPage=" .. self.articles_per_sync
                           .. filtering
-        local articles_json = self:callAPI("GET", articles_url, nil, "", "")
+        local articles_json = self:callAPI("GET", articles_url, nil, "", "", true)
 
         if not articles_json then
             -- we may have hit the last page, there are no more articles
@@ -469,7 +504,7 @@ end
 -- body: empty string if not needed
 -- filepath: downloads the file if provided, returns JSON otherwise
 ---- @todo separate call to internal API from the download on external server
-function Wallabag:callAPI(method, apiurl, headers, body, filepath)
+function Wallabag:callAPI(method, apiurl, headers, body, filepath, quiet)
     local request, sink = {}, {}
     local parsed
 
@@ -540,7 +575,7 @@ function Wallabag:callAPI(method, apiurl, headers, body, filepath)
                 os.remove(filepath)
                 logger.dbg("Wallabag: Removed failed download: ", filepath)
             end
-        else
+        elseif not quiet then
             UIManager:show(InfoMessage:new{
                 text = _("Communication with server failed."), })
         end
@@ -556,6 +591,17 @@ function Wallabag:synchronize()
 
     if self:getBearerToken() == false then
         return false
+    end
+    if self.download_queue and next(self.download_queue) ~= nil then
+        info = InfoMessage:new{ text = _("Adding articles from queue…") }
+        UIManager:show(info)
+        UIManager:forceRePaint()
+        for _, articleUrl in ipairs(self.download_queue) do
+            self:addArticle(articleUrl)
+        end
+        self.download_queue = {}
+        self:saveSettings()
+        UIManager:close(info)
     end
 
     local deleted_count = self:processLocalFiles()
@@ -729,7 +775,7 @@ function Wallabag:deleteLocalArticle(path)
         os.remove(path)
         local sdr_dir = DocSettings:getSidecarDir(path)
         FFIUtil.purgeDir(sdr_dir)
-        filemanagerutil.removeFileFromHistoryIfWanted(path)
+        ReadHistory:fileDeleted(path)
    end
 end
 
@@ -824,7 +870,7 @@ Enter the details of your Wallabag server and account.
 Client ID and client secret are long strings so you might prefer to save the empty settings and edit the config file directly in your installation directory:
 %1/wallabag.lua
 
-Restart KOReader after editing the config file.]]), DataStorage:getSettingsDir())
+Restart KOReader after editing the config file.]]), BD.dirpath(DataStorage:getSettingsDir()))
 
     self.settings_dialog = MultiInputDialog:new {
         title = _("Wallabag settings"),
@@ -964,7 +1010,9 @@ function Wallabag:saveSettings()
         is_archiving_deleted  = self.is_archiving_deleted,
         is_auto_delete        = self.is_auto_delete,
         is_sync_remote_delete = self.is_sync_remote_delete,
-        articles_per_sync     = self.articles_per_sync
+        articles_per_sync     = self.articles_per_sync,
+        remove_finished_from_history = self.remove_finished_from_history,
+        download_queue        = self.download_queue,
     }
     self.wb_settings:saveSetting("wallabag", tempsettings)
     self.wb_settings:flush()
@@ -987,18 +1035,22 @@ end
 
 function Wallabag:onAddWallabagArticle(article_url)
     if not NetworkMgr:isOnline() then
-        NetworkMgr:promptWifiOn()
+        self:addToDownloadQueue(article_url)
+        UIManager:show(InfoMessage:new{
+            text = T(_("Article added to download queue:\n%1"), BD.url(article_url)),
+            timeout = 1,
+         })
         return
     end
 
     local wallabag_result = self:addArticle(article_url)
     if wallabag_result then
         UIManager:show(InfoMessage:new{
-            text = T(_("Article added to Wallabag:\n%1"), article_url),
+            text = T(_("Article added to Wallabag:\n%1"), BD.url(article_url)),
         })
     else
         UIManager:show(InfoMessage:new{
-            text = T(_("Error adding link to Wallabag:\n%1"), article_url),
+            text = T(_("Error adding link to Wallabag:\n%1"), BD.url(article_url)),
         })
     end
 
@@ -1016,6 +1068,29 @@ function Wallabag:onSynchronizeWallabag()
 
     -- stop propagation
     return true
+end
+
+function Wallabag:getLastPercent()
+    if self.ui.document.info.has_pages then
+        return Math.roundPercent(self.ui.paging:getLastPercent())
+    else
+        return Math.roundPercent(self.ui.rolling:getLastPercent())
+    end
+end
+
+function Wallabag:addToDownloadQueue(article_url)
+    table.insert(self.download_queue, article_url)
+    self:saveSettings()
+end
+
+function Wallabag:onCloseDocument()
+    if self.remove_finished_from_history then
+        local document_full_path = self.ui.document.file
+        if document_full_path and self.directory and self:getLastPercent() == 1 and self.directory == string.sub(document_full_path, 1, string.len(self.directory)) then
+            ReadHistory:removeItemByPath(document_full_path)
+            self.ui:setLastDirForFileBrowser(self.directory)
+        end
+    end
 end
 
 return Wallabag

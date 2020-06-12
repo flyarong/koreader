@@ -45,7 +45,7 @@ local Kobo = Generic:new{
     -- currently only the Aura One and Forma have coloured frontlights
     hasNaturalLight = no,
     hasNaturalLightMixer = no,
-    -- HW inversion is generally safe on Kobo, except on a few baords/kernels
+    -- HW inversion is generally safe on Kobo, except on a few boards/kernels
     canHWInvert = yes,
 }
 
@@ -767,6 +767,10 @@ function Kobo:saveSettings()
 end
 
 function Kobo:powerOff()
+    -- Much like Nickel itself, disable the RTC alarm before powering down.
+    WakeupMgr:unsetWakeupAlarm()
+
+    -- Then shut down without init's help
     os.execute("poweroff -f")
 end
 

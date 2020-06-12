@@ -48,13 +48,8 @@ local ReaderView = OverlapGroup:extend{
     page_scroll = nil,
     page_bgcolor = Blitbuffer.gray(DBACKGROUND_COLOR/15),
     page_states = {},
-    scroll_mode = "vertical",
     -- properties of the gap drawn between each page in scroll mode:
     page_gap = {
-        -- width in pixels (when scrolling horizontally)
-        width = Screen:scaleBySize(G_reader_settings:readSetting("page_gap_width") or 8),
-        -- height in pixels (when scrolling vertically)
-        height = Screen:scaleBySize(G_reader_settings:readSetting("page_gap_height") or 8),
         -- color (0 = white, 8 = gray, 15 = black)
         color = Blitbuffer.gray((G_reader_settings:readSetting("page_gap_color") or 8)/15),
     },
@@ -76,10 +71,8 @@ local ReaderView = OverlapGroup:extend{
     dogear_visible = false,
     -- in flipping state
     flipping_visible = false,
-
-    -- auto save settings after turning pages
-    auto_save_paging_count = 0,
-    autoSaveSettings = function()end
+    -- to ensure periodic flush of settings
+    settings_last_save_ts = nil,
 }
 
 function ReaderView:init()
@@ -304,8 +297,9 @@ end
 function ReaderView:drawPageSurround(bb, x, y)
     if self.dimen.h > self.visible_area.h then
         bb:paintRect(x, y, self.dimen.w, self.state.offset.y, self.outer_page_color)
-        bb:paintRect(x, y + self.dimen.h - self.state.offset.y - 1,
-            self.dimen.w, self.state.offset.y + 1, self.outer_page_color)
+        local bottom_margin = y + self.visible_area.h + self.state.offset.y
+        bb:paintRect(x, bottom_margin, self.dimen.w, self.state.offset.y +
+            self.ui.view.footer:getHeight(), self.outer_page_color)
     end
     if self.dimen.w > self.visible_area.w then
         bb:paintRect(x, y, self.state.offset.x, self.dimen.h, self.outer_page_color)
@@ -388,11 +382,7 @@ function ReaderView:getScrollPageRect(page, rect_p)
 end
 
 function ReaderView:drawPageGap(bb, x, y)
-    if self.scroll_mode == "vertical" then
-        bb:paintRect(x, y, self.dimen.w, self.page_gap.height, self.page_gap.color)
-    elseif self.scroll_mode == "horizontal" then
-        bb:paintRect(x, y, self.page_gap.width, self.dimen.h, self.page_gap.color)
-    end
+    bb:paintRect(x, y, self.dimen.w, self.page_gap.height, self.page_gap.color)
 end
 
 function ReaderView:drawSinglePage(bb, x, y)
@@ -573,6 +563,9 @@ function ReaderView:recalculate()
             self.state.rotation)
         -- reset our size
         self.visible_area:setSizeTo(self.dimen)
+        if self.ui.view.footer_visible then
+            self.visible_area.h = self.visible_area.h - self.ui.view.footer:getHeight()
+        end
         if self.ui.document.configurable.writing_direction == 0 then
             -- starts from left top of page_area
             self.visible_area.x = self.page_area.x
@@ -582,8 +575,10 @@ function ReaderView:recalculate()
             self.visible_area.x = self.page_area.x + self.page_area.w - self.visible_area.w
             self.visible_area.y = self.page_area.y
         end
-        -- and recalculate it according to page size
-        self.visible_area:offsetWithin(self.page_area, 0, 0)
+        if not self.page_scroll then
+            -- and recalculate it according to page size
+            self.visible_area:offsetWithin(self.page_area, 0, 0)
+        end
         -- clear dim area
         self.dim_area.w = 0
         self.dim_area.h = 0
@@ -594,7 +589,11 @@ function ReaderView:recalculate()
     end
     self.state.offset = Geom:new{x = 0, y = 0}
     if self.dimen.h > self.visible_area.h then
-        self.state.offset.y = (self.dimen.h - self.visible_area.h) / 2
+        if self.ui.view.footer_visible then
+            self.state.offset.y = (self.dimen.h - (self.visible_area.h + self.ui.view.footer:getHeight())) / 2
+        else
+            self.state.offset.y = (self.dimen.h - self.visible_area.h) / 2
+        end
     end
     if self.dimen.w > self.visible_area.w then
         self.state.offset.x = (self.dimen.w - self.visible_area.w) / 2
@@ -696,7 +695,6 @@ function ReaderView:onSetScreenMode(new_mode, rotation, noskip)
         return true
     end
     if new_mode == "landscape" or new_mode == "portrait" then
-        self.screen_mode = new_mode
         -- NOTE: Hacky hack! If rotation is "true", that's actually an "interactive" flag for setScreenMode
         --- @fixme That's because we can't store nils in a table, which is what Event:new attempts to do ;).
         --        c.f., <https://stackoverflow.com/q/7183998/> & <http://lua-users.org/wiki/VarargTheSecondClassCitizen>
@@ -713,7 +711,6 @@ function ReaderView:onSetScreenMode(new_mode, rotation, noskip)
         self.ui:onScreenResize(new_screen_size)
         self.ui:handleEvent(Event:new("InitScrollPageStates"))
     end
-    self.cur_rotation_mode = Screen:getRotationMode()
     return true
 end
 
@@ -761,10 +758,9 @@ function ReaderView:onReadSettings(config)
         screen_mode = config:readSetting("screen_mode") or G_reader_settings:readSetting("copt_screen_mode") or "portrait"
     end
     if screen_mode then
-        Screen:setScreenMode(screen_mode)
         self:onSetScreenMode(screen_mode, config:readSetting("rotation_mode"), true)
     end
-    self.state.gamma = config:readSetting("gamma") or DGLOBALGAMMA
+    self.state.gamma = config:readSetting("gamma") or 1.0
     local full_screen = config:readSetting("kopt_full_screen") or self.document.configurable.full_screen
     if full_screen == 0 then
         self.footer_visible = false
@@ -774,20 +770,22 @@ function ReaderView:onReadSettings(config)
     self.page_scroll = page_scroll == 1 and true or false
     self.highlight.saved = config:readSetting("highlight") or {}
     self.page_overlap_style = config:readSetting("page_overlap_style") or G_reader_settings:readSetting("page_overlap_style") or "dim"
+    self.page_gap.height = Screen:scaleBySize(config:readSetting("kopt_page_gap_height") or
+        G_reader_settings:readSetting("kopt_page_gap_height") or 8)
 end
 
 function ReaderView:onPageUpdate(new_page_no)
     self.state.page = new_page_no
     self:recalculate()
     self.highlight.temp = {}
-    UIManager:nextTick(self.autoSaveSettings)
+    self:checkAutoSaveSettings()
 end
 
 function ReaderView:onPosUpdate(new_pos)
     self.state.pos = new_pos
     self:recalculate()
     self.highlight.temp = {}
-    UIManager:nextTick(self.autoSaveSettings)
+    self:checkAutoSaveSettings()
 end
 
 function ReaderView:onZoomUpdate(zoom)
@@ -837,10 +835,18 @@ function ReaderView:onSetViewMode(new_mode)
     return true
 end
 
+--Refresh after changing a variable done by koptoptions.lua since all of them
+--requires full screen refresh. If this handler used for changing page gap from
+--another source (eg. coptions.lua) triggering a redraw is needed.
+function ReaderView:onPageGapUpdate(page_gap)
+    self.page_gap.height = page_gap
+    return true
+end
+
 function ReaderView:onSaveSettings()
     self.ui.doc_settings:saveSetting("render_mode", self.render_mode)
-    self.ui.doc_settings:saveSetting("screen_mode", self.screen_mode)
-    self.ui.doc_settings:saveSetting("rotation_mode", self.cur_rotation_mode)
+    self.ui.doc_settings:saveSetting("screen_mode", Screen:getScreenMode())
+    self.ui.doc_settings:saveSetting("rotation_mode", Screen:getRotationMode())
     self.ui.doc_settings:saveSetting("gamma", self.state.gamma)
     self.ui.doc_settings:saveSetting("highlight", self.highlight.saved)
     self.ui.doc_settings:saveSetting("page_overlap_style", self.page_overlap_style)
@@ -913,21 +919,29 @@ function ReaderView:onCloseDocument()
 end
 
 function ReaderView:onReaderReady()
-    if DAUTO_SAVE_PAGING_COUNT ~= nil then
-        if DAUTO_SAVE_PAGING_COUNT <= 0 then
-            self.autoSaveSettings = function()
-                self.ui:saveSettings()
-            end
-        else
-            self.autoSaveSettings = function()
-                if self.auto_save_paging_count == DAUTO_SAVE_PAGING_COUNT then
-                    self.ui:saveSettings()
-                    self.auto_save_paging_count = 0
-                else
-                    self.auto_save_paging_count = self.auto_save_paging_count + 1
-                end
-            end
-        end
+    self.settings_last_save_ts = os.time()
+end
+
+function ReaderView:onResume()
+    -- As settings were saved on suspend, reset this on resume,
+    -- as there's no need for a possibly immediate save.
+    self.settings_last_save_ts = os.time()
+end
+
+function ReaderView:checkAutoSaveSettings()
+    if not self.settings_last_save_ts then -- reader not yet ready
+        return
+    end
+    local interval = G_reader_settings:readSetting("auto_save_settings_interval_minutes")
+    if not interval then -- no auto save
+        return
+    end
+    if os.time() - self.settings_last_save_ts >= interval*60 then
+        self.settings_last_save_ts = os.time()
+        UIManager:nextTick(function()
+            self.ui:saveSettings()
+            self.settings_last_save_ts = os.time() -- re-set when saving done
+        end)
     end
 end
 

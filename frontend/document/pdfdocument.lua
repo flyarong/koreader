@@ -175,6 +175,14 @@ function PdfDocument:saveHighlight(pageno, item)
     local suffix = util.getFileNameSuffix(self.file)
     if string.lower(suffix) ~= "pdf" then return end
 
+    if self.is_writable == nil then
+        local handle = io.open(self.file, 'r+b')
+        self.is_writable = handle ~= nil
+        if handle then handle:close() end
+    end
+    if self.is_writable == false then
+        return false
+    end
     self.is_edited = true
     -- will also need mupdf_h.lua to be evaluated once
     -- but this is guaranteed at this point
@@ -280,6 +288,7 @@ function PdfDocument:register(registry)
     registry:addProvider("cbt", "application/vnd.comicbook+tar", self, 100)
     registry:addProvider("cbz", "application/vnd.comicbook+zip", self, 100)
     registry:addProvider("epub", "application/epub+zip", self, 50)
+    registry:addProvider("epub3", "application/epub+zip", self, 50)
     registry:addProvider("fb2", "application/fb2", self, 80)
     registry:addProvider("htm", "text/html", self, 90)
     registry:addProvider("html", "text/html", self, 90)

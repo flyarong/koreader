@@ -1,30 +1,38 @@
-local DropBoxApi = require("apps/cloudstorage/dropboxapi")
+local BD = require("ui/bidi")
 local ConfirmBox = require("ui/widget/confirmbox")
+local DocumentRegistry = require("document/documentregistry")
+local DropBoxApi = require("apps/cloudstorage/dropboxapi")
 local InfoMessage = require("ui/widget/infomessage")
 local MultiInputDialog = require("ui/widget/multiinputdialog")
 local UIManager = require("ui/uimanager")
 local ReaderUI = require("apps/reader/readerui")
+local util = require("util")
 local Screen = require("device").screen
 local T = require("ffi/util").template
 local _ = require("gettext")
 
 local DropBox = {}
 
-function DropBox:run(url, password)
-    return DropBoxApi:listFolder(url, password)
+function DropBox:run(url, password, choose_folder_mode)
+    return DropBoxApi:listFolder(url, password, choose_folder_mode)
+end
+
+function DropBox:showFiles(url, password)
+    return DropBoxApi:showFiles(url, password)
 end
 
 function DropBox:downloadFile(item, password, path, close)
     local code_response = DropBoxApi:downloadFile(item.url, password, path)
     if code_response == 200 then
-        if G_reader_settings:isTrue("show_unsupported") then
+        local __, filename = util.splitFilePathName(path)
+        if G_reader_settings:isTrue("show_unsupported") and not DocumentRegistry:hasProvider(filename) then
             UIManager:show(InfoMessage:new{
-                text = T(_("File saved to:\n%1"), path),
+                text = T(_("File saved to:\n%1"), BD.filename(path)),
             })
         else
             UIManager:show(ConfirmBox:new{
                 text = T(_("File saved to:\n%1\nWould you like to read the downloaded book now?"),
-                    path),
+                    BD.filepath(path)),
                 ok_callback = function()
                     close()
                     ReaderUI:showReader(path)
@@ -33,9 +41,18 @@ function DropBox:downloadFile(item, password, path, close)
         end
     else
         UIManager:show(InfoMessage:new{
-            text = T(_("Could not save file to:\n%1"), path),
+            text = T(_("Could not save file to:\n%1"), BD.filepath(path)),
             timeout = 3,
         })
+    end
+end
+
+function DropBox:downloadFileNoUI(url, password, path)
+    local code_response = DropBoxApi:downloadFile(url, password, path)
+    if code_response == 200 then
+        return true
+    else
+        return false
     end
 end
 

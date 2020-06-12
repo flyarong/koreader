@@ -1,3 +1,4 @@
+local BD = require("ui/bidi")
 local CenterContainer = require("ui/widget/container/centercontainer")
 local ConfirmBox = require("ui/widget/confirmbox")
 local Device = require("device")
@@ -48,18 +49,22 @@ function ReaderFont:init()
                 event = "ChangeLineSpace", args = "decrease" },
         }
     end
-    -- build face_table for menu
+    -- Build face_table for menu
     self.face_table = {}
-    if Device:isDesktop() then
-        table.insert(self.face_table, require("ui/elements/font_settings"):getMenuTable())
-    end
+    -- Font settings
+    table.insert(self.face_table, {
+        text = _("Font settings"),
+        sub_item_table = self:getFontSettingsTable(),
+        separator = true,
+    })
+    -- Font list
     local face_list = cre.getFontFaces()
     for k,v in ipairs(face_list) do
         table.insert(self.face_table, {
             text_func = function()
                 -- defaults are hardcoded in credocument.lua
                 local default_font = G_reader_settings:readSetting("cre_font") or self.ui.document.default_font
-                local fallback_font = G_reader_settings:readSetting("fallback_font") or self.ui.document.fallback_font
+                local fallback_font = G_reader_settings:readSetting("fallback_font") or self.ui.document.fallback_fonts[1]
                 local text = v
                 if v == default_font then
                     text = text .. "   ★"
@@ -80,20 +85,6 @@ function ReaderFont:init()
             end
         })
         face_list[k] = {text = v}
-    end
-    if self:hasFontsTestSample() then
-        self.face_table[#self.face_table].separator = true
-        table.insert(self.face_table, {
-            text = _("Generate fonts test HTML document"),
-            callback = function()
-                UIManager:show(ConfirmBox:new{
-                    text = _("Would you like to generate an HTML document showing some sample text rendered with each available font?");
-                    ok_callback = function()
-                        self:buildFontsTestDocument()
-                    end
-                })
-            end
-        })
     end
     self.ui.menu:registerToMainMenu(self)
 end
@@ -130,9 +121,13 @@ function ReaderFont:onReadSettings(config)
             or G_reader_settings:readSetting("copt_font_kerning") or 3 -- harfbuzz (slower, but needed for proper arabic)
     self.ui.document:setFontKerning(self.font_kerning)
 
-    self.space_condensing = config:readSetting("space_condensing")
-        or G_reader_settings:readSetting("copt_space_condensing") or 75
-    self.ui.document:setSpaceCondensing(self.space_condensing)
+    self.word_spacing = config:readSetting("word_spacing")
+        or G_reader_settings:readSetting("copt_word_spacing") or {95, 75}
+    self.ui.document:setWordSpacing(self.word_spacing)
+
+    self.word_expansion = config:readSetting("word_expansion")
+        or G_reader_settings:readSetting("copt_word_expansion") or 0
+    self.ui.document:setWordExpansion(self.word_expansion)
 
     self.line_space_percent = config:readSetting("line_space_percent")
             or G_reader_settings:readSetting("copt_line_spacing")
@@ -241,9 +236,16 @@ function ReaderFont:onSetFontKerning(mode)
     return true
 end
 
-function ReaderFont:onSetSpaceCondensing(space)
-    self.space_condensing = space
-    self.ui.document:setSpaceCondensing(space)
+function ReaderFont:onSetWordSpacing(values)
+    self.word_spacing = values
+    self.ui.document:setWordSpacing(values)
+    self.ui:handleEvent(Event:new("UpdatePos"))
+    return true
+end
+
+function ReaderFont:onSetWordExpansion(value)
+    self.word_expansion = value
+    self.ui.document:setWordExpansion(value)
     self.ui:handleEvent(Event:new("UpdatePos"))
     return true
 end
@@ -267,7 +269,8 @@ function ReaderFont:onSaveSettings()
     self.ui.doc_settings:saveSetting("font_embolden", self.font_embolden)
     self.ui.doc_settings:saveSetting("font_hinting", self.font_hinting)
     self.ui.doc_settings:saveSetting("font_kerning", self.font_kerning)
-    self.ui.doc_settings:saveSetting("space_condensing", self.space_condensing)
+    self.ui.doc_settings:saveSetting("word_spacing", self.word_spacing)
+    self.ui.doc_settings:saveSetting("word_expansion", self.word_expansion)
     self.ui.doc_settings:saveSetting("line_space_percent", self.line_space_percent)
     self.ui.doc_settings:saveSetting("gamma_index", self.gamma_index)
 end
@@ -297,10 +300,9 @@ function ReaderFont:makeDefault(face, touchmenu_instance)
             end,
             choice2_text = C_("Font", "Fallback"),
             choice2_callback = function()
-                if self.ui.document:setFallbackFontFace(face) then
-                    G_reader_settings:saveSetting("fallback_font", face)
-                    self.ui:handleEvent(Event:new("UpdatePos"))
-                end
+                G_reader_settings:saveSetting("fallback_font", face)
+                self.ui.document:setupFallbackFontFaces()
+                self.ui:handleEvent(Event:new("UpdatePos"))
                 if touchmenu_instance then touchmenu_instance:updateItems() end
             end,
         })
@@ -308,6 +310,9 @@ function ReaderFont:makeDefault(face, touchmenu_instance)
 end
 
 function ReaderFont:addToMainMenu(menu_items)
+    -- Have TouchMenu show half of the usual nb of items, so we
+    -- have more room to see how the text looks with that font
+    self.face_table.max_per_page = 5
     -- insert table to main reader menu
     menu_items.change_font = {
         text = self.font_menu_title,
@@ -343,24 +348,79 @@ function ReaderFont:onAdjustFontSize(ges, direction)
     return true
 end
 
-function ReaderFont:hasFontsTestSample()
-    local font_test_sample = require("datastorage"):getSettingsDir() .. "/fonts-test-sample.html"
-    local lfs = require("libs/libkoreader-lfs")
-    return lfs.attributes(font_test_sample, "mode") == "file"
+function ReaderFont:getFontSettingsTable()
+    local settings_table = {}
+
+    if Device:isAndroid() or Device:isDesktop() or Device:isEmulator() then
+        for _, item in ipairs(require("ui/elements/font_settings"):getSystemFontMenuItems()) do
+            table.insert(settings_table, item)
+        end
+        settings_table[#settings_table].separator = true
+    end
+
+    table.insert(settings_table, {
+        text = _("Use additional fallback fonts"),
+        checked_func = function()
+            return G_reader_settings:nilOrTrue("additional_fallback_fonts")
+        end,
+        callback = function()
+        G_reader_settings:flipNilOrTrue("additional_fallback_fonts")
+            self.ui.document:setupFallbackFontFaces()
+            self.ui:handleEvent(Event:new("UpdatePos"))
+        end,
+        help_text = T(_([[
+Enable additional fallback fonts, for the most complete script and language coverage.
+These fonts will be used in this order:
+
+%1
+
+You can set a preferred fallback font with a long-press on a font name, and it will be used before these.
+If that font happens to be part of this list already, it will be used first.]]),
+            table.concat(self.ui.document.fallback_fonts, "\n")),
+        separator = true,
+    })
+
+    table.insert(settings_table, {
+        text = _("Generate font test document"),
+        callback = function()
+            UIManager:show(ConfirmBox:new{
+                text = _("Would you like to generate an HTML document showing some sample text rendered with each available font?");
+                ok_callback = function()
+                    self:buildFontsTestDocument()
+                end
+            })
+        end,
+    })
+    return settings_table
 end
 
+-- Default sample file
+local FONT_TEST_DEFAULT_SAMPLE_PATH = "frontend/ui/elements/font-test-sample-default.html"
+-- Users can set their own sample file, that will be used if found
+local FONT_TEST_USER_SAMPLE_PATH = require("datastorage"):getSettingsDir() .. "/font-test-sample.html"
+-- This document will be generated in the home or default directory
+local FONT_TEST_FINAL_FILENAME = "font-test.html"
+
 function ReaderFont:buildFontsTestDocument()
-    local font_test_sample = require("datastorage"):getSettingsDir() .. "/fonts-test-sample.html"
-    local f = io.open(font_test_sample, "r")
-    if not f then return nil end
-    local html_sample = f:read("*all")
-    f:close()
+    local html_sample
+    local f = io.open(FONT_TEST_USER_SAMPLE_PATH, "r")
+    if f then
+        html_sample = f:read("*all")
+        f:close()
+    end
+    if not html_sample then
+        f = io.open(FONT_TEST_DEFAULT_SAMPLE_PATH, "r")
+        if not f then return nil end
+        html_sample = f:read("*all")
+        f:close()
+    end
     local dir = G_reader_settings:readSetting("home_dir")
     if not dir then dir = require("apps/filemanager/filemanagerutil").getDefaultDir() end
     if not dir then dir = "." end
-    local fonts_test_path = dir .. "/fonts-test-all.html"
-    f = io.open(fonts_test_path, "w")
-    -- Using <section><title>...</title></section> allows for a TOC to be built
+    local font_test_final_path = dir .. "/" .. FONT_TEST_FINAL_FILENAME
+    f = io.open(font_test_final_path, "w")
+    if not f then return end
+    -- Using <section><title>...</title></section> allows for a TOC to be built by crengine
     f:write(string.format([[
 <?xml version="1.0" encoding="UTF-8"?>
 <html>
@@ -397,10 +457,10 @@ a { color: black; }
     f:write("</body></html>\n")
     f:close()
     UIManager:show(ConfirmBox:new{
-        text = T(_("Document created as:\n%1\n\nWould you like to read it now?"), fonts_test_path),
+        text = T(_("Document created as:\n%1\n\nWould you like to read it now?"), BD.filepath(font_test_final_path)),
         ok_callback = function()
             UIManager:scheduleIn(1.0, function()
-                self.ui:switchDocument(fonts_test_path)
+                self.ui:switchDocument(font_test_final_path)
             end)
         end,
     })

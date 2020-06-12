@@ -1,3 +1,4 @@
+local BD = require("ui/bidi")
 local ConfirmBox = require("ui/widget/confirmbox")
 local DataStorage = require("datastorage")
 local Device = require("device")
@@ -152,6 +153,16 @@ function NetworkMgr:isOnline()
     return socket.dns.toip("dns.msftncsi.com") ~= nil
 end
 
+function NetworkMgr:isNetworkInfoAvailable()
+    if Device:isAndroid() then
+        -- always available
+        return true
+    else
+        --- @todo also show network info when device is authenticated to router but offline
+        return self:isWifiOn()
+    end
+end
+
 function NetworkMgr:setHTTPProxy(proxy)
     local http = require("socket.http")
     http.PROXY = proxy
@@ -164,6 +175,18 @@ function NetworkMgr:setHTTPProxy(proxy)
 end
 
 function NetworkMgr:getWifiMenuTable()
+    if Device:isAndroid() then
+        return {
+            text = _("Wi-Fi settings"),
+            enabled_func = function() return true end,
+            callback = function() NetworkMgr:openSettings() end,
+        }
+    else
+        return self:getWifiToggleMenuTable()
+    end
+end
+
+function NetworkMgr:getWifiToggleMenuTable()
     return {
         text = _("Wi-Fi connection"),
         enabled_func = function() return Device:hasWifiToggle() and not Device:isEmulator() end,
@@ -225,7 +248,7 @@ function NetworkMgr:getProxyMenuTable()
     end
     return {
         text_func = function()
-            return T(_("HTTP proxy %1"), (proxy_enabled() and proxy() or ""))
+            return T(_("HTTP proxy %1"), (proxy_enabled() and BD.url(proxy()) or ""))
         end,
         checked_func = function() return proxy_enabled() end,
         callback = function()
@@ -266,8 +289,7 @@ function NetworkMgr:getInfoMenuTable()
     return {
         text = _("Network info"),
         keep_menu_open = true,
-        --- @todo also show network info when device is authenticated to router but offline
-        enabled_func = function() return self:isWifiOn() end,
+        enabled_func = function() return self:isNetworkInfoAvailable() end,
         callback = function()
             if Device.retrieveNetworkInfo then
                 UIManager:show(InfoMessage:new{
@@ -388,7 +410,7 @@ function NetworkMgr:reconnectOrShowNetworkMenu(complete_callback)
                            complete_callback()
                        end
                        UIManager:show(InfoMessage:new{
-                           text = T(_("Connected to network %1"), network.ssid),
+                           text = T(_("Connected to network %1"), BD.wrap(network.ssid)),
                            timeout = 3,
                        })
                        return

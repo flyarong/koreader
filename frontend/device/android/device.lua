@@ -20,7 +20,11 @@ local function getCodename()
     local api = android.app.activity.sdkVersion
     local codename = ""
 
-    if api > 27 then
+    if api > 29 then
+        codename = "R"
+    elseif api == 29 then
+        codename = "Q"
+    elseif api == 28 then
         codename = "Pie"
     elseif api == 27 or api == 26 then
         codename = "Oreo"
@@ -79,6 +83,12 @@ local Device = Generic:new{
         if not link or type(link) ~= "string" then return end
         return android.openLink(link) == 0
     end,
+    canImportFiles = function() return android.app.activity.sdkVersion >= 19 end,
+    importFile = function(path) android.importFile(path) end,
+    isValidPath = function(path) return android.isPathInsideSandbox(path) end,
+    canShareText = yes,
+    doShareText = function(text) android.sendText(text) end,
+
     canExternalDictLookup = yes,
     getExternalDictLookupList = getExternalDicts,
     doExternalDictLookup = function (self, text, method, callback)
@@ -129,21 +139,35 @@ function Device:init()
                     external_dict_when_back_callback()
                     external_dict_when_back_callback = nil
                 end
-
                 local new_file = android.getIntent()
                 if new_file ~= nil and lfs.attributes(new_file, "mode") == "file" then
                     -- we cannot blit to a window here since we have no focus yet.
                     local UIManager = require("ui/uimanager")
                     local InfoMessage = require("ui/widget/infomessage")
+                    local BD = require("ui/bidi")
                     UIManager:scheduleIn(0.1, function()
                         UIManager:show(InfoMessage:new{
-                            text = T(_("Opening file '%1'."), new_file),
+                            text = T(_("Opening file '%1'."), BD.filepath(new_file)),
                             timeout = 0.0,
                         })
                     end)
                     UIManager:scheduleIn(0.2, function()
                         require("apps/reader/readerui"):doShowReader(new_file)
                     end)
+                else
+                    -- check if we're resuming from importing content.
+                    local content_path = android.getLastImportedPath()
+                    if content_path ~= nil then
+                        local FileManager = require("apps/filemanager/filemanager")
+                        local UIManager = require("ui/uimanager")
+                        UIManager:scheduleIn(0.5, function()
+                            if FileManager.instance then
+                                FileManager.instance:onRefresh()
+                            else
+                                FileManager:showFiles(content_path)
+                            end
+                        end)
+                    end
                 end
             end
         end,
@@ -190,9 +214,14 @@ function Device:init()
         self:toggleFullscreen()
     end
 
+    -- check if we allow haptic feedback in spite of system settings
+    if G_reader_settings:isTrue("haptic_feedback_override") then
+        android.setHapticOverride(true)
+    end
+
     -- check if we ignore volume keys and then they're forwarded to system services.
     if G_reader_settings:isTrue("android_ignore_volume_keys") then
-        android.setVolumeKeysIgnored(true);
+        android.setVolumeKeysIgnored(true)
     end
 
     -- check if we enable a custom light level for this activity
@@ -206,22 +235,21 @@ end
 
 function Device:initNetworkManager(NetworkMgr)
     function NetworkMgr:turnOnWifi(complete_callback)
-        android.setWifiEnabled(true)
-        if complete_callback then
-            local UIManager = require("ui/uimanager")
-            UIManager:scheduleIn(1, complete_callback)
-        end
+        android.openWifiSettings()
+    end
+    function NetworkMgr:turnOffWifi(complete_callback)
+        android.openWifiSettings()
     end
 
-    function NetworkMgr:turnOffWifi(complete_callback)
-        android.setWifiEnabled(false)
-        if complete_callback then
-            local UIManager = require("ui/uimanager")
-            UIManager:scheduleIn(1, complete_callback)
-        end
+    function NetworkMgr:openSettings()
+        android.openWifiSettings()
     end
-    NetworkMgr.isWifiOn = function()
-        return android.isWifiEnabled()
+
+    function NetworkMgr:isWifiOn()
+        local ok = android.getNetworkInfo()
+        ok = tonumber(ok)
+        if not ok then return false end
+        return ok == 1
     end
 end
 
@@ -230,11 +258,23 @@ function Device:performHapticFeedback(type)
 end
 
 function Device:retrieveNetworkInfo()
-    local ssid, ip, gw = android.getNetworkInfo()
-    if ip == "0" or gw == "0" then
+    local ok, type = android.getNetworkInfo()
+    ok, type = tonumber(ok), tonumber(type)
+    if not ok or not type or type == C.ANETWORK_NONE then
         return _("Not connected")
     else
-        return T(_("Connected to %1\n IP address: %2\n gateway: %3"), ssid, ip, gw)
+        if type == C.ANETWORK_WIFI then
+            return _("Connected to Wi-Fi")
+        elseif type == C.ANETWORK_MOBILE then
+            return _("Connected to mobile data network")
+        elseif type == C.ANETWORK_ETHERNET then
+            return _("Connected to Ethernet")
+        elseif type == C.ANETWORK_BLUETOOTH then
+            return _("Connected to Bluetooth")
+        elseif type == C.ANETWORK_VPN then
+            return _("Connected to VPN")
+        end
+        return _("Unknown connection")
     end
 end
 
@@ -287,6 +327,10 @@ function Device:info()
     end
 
     return common_text..eink_text..wakelocks_text
+end
+
+function Device:epdTest()
+    android.einkTest()
 end
 
 function Device:exit()

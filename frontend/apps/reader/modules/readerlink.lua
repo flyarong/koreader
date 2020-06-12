@@ -2,6 +2,7 @@
 ReaderLink is an abstraction for document-specific link interfaces.
 ]]
 
+local BD = require("ui/bidi")
 local ButtonDialogTitle = require("ui/widget/buttondialogtitle")
 local ConfirmBox = require("ui/widget/confirmbox")
 local Device = require("device")
@@ -33,8 +34,18 @@ function ReaderLink:init()
                     ratio_w = 1, ratio_h = 1,
                 },
                 overrides = {
+                    -- Tap on links have priority over everything (it can
+                    -- be disabled with "Tap to follow links" menu item)
                     "tap_forward",
                     "tap_backward",
+                    "readermenu_tap",
+                    "readerconfigmenu_tap",
+                    "readerhighlight_tap",
+                    "readerfooter_tap",
+                    "tap_top_left_corner",
+                    "tap_top_right_corner",
+                    "tap_left_bottom_corner",
+                    "tap_right_bottom_corner",
                 },
                 handler = function(ges) return self:onTap(_, ges) end,
             },
@@ -246,7 +257,7 @@ From the footnote popup, you can jump to the footnote location in the book by sw
                     precision = "%+d",
                     ok_text = _("Set font size"),
                     title_text =  _("Set footnote popup font size"),
-                    text = _([[
+                    info_text = _([[
 The footnote popup font adjusts to the font size you've set for the document.
 You can specify here how much smaller or larger it should be relative to the document font size.
 A negative value will make it smaller, while a positive one will make it larger.
@@ -513,7 +524,7 @@ function ReaderLink:onGotoLink(link, neglect_current_location, allow_footnote_po
     end
 
     -- Check if it is a link to a local file
-    local linked_filename = link_url:gsub("^file:", "") -- remove local file protocol if any
+    local linked_filename = link_url:gsub("^file:(//)?", "") -- remove local file protocol if any
     local anchor
     if linked_filename:find("?") then -- remove any query string (including any following anchor)
         linked_filename, anchor = linked_filename:match("^(.-)(%?.*)$")
@@ -533,7 +544,7 @@ function ReaderLink:onGotoLink(link, neglect_current_location, allow_footnote_po
                 display_filename = display_filename .. anchor
             end
             UIManager:show(ConfirmBox:new{
-                text = T(_("Would you like to read this local document?\n\n%1\n"), display_filename),
+                text = T(_("Would you like to read this local document?\n\n%1\n"), BD.filepath(display_filename)),
                 ok_callback = function()
                     UIManager:scheduleIn(0.1, function()
                         self.ui:switchDocument(linked_filename)
@@ -542,7 +553,7 @@ function ReaderLink:onGotoLink(link, neglect_current_location, allow_footnote_po
             })
         else
             UIManager:show(InfoMessage:new{
-                text = T(_("Link to unsupported local file:\n%1"), link_url),
+                text = T(_("Link to unsupported local file:\n%1"), BD.url(link_url)),
             })
         end
         return true
@@ -550,7 +561,7 @@ function ReaderLink:onGotoLink(link, neglect_current_location, allow_footnote_po
 
     -- Not supported
     UIManager:show(InfoMessage:new{
-        text = T(_("Invalid or external link:\n%1"), link_url),
+        text = T(_("Invalid or external link:\n%1"), BD.url(link_url)),
         -- no timeout to allow user to type that link in his web browser
     })
     -- don't propagate, user will notice and tap elsewhere if he wants to change page
@@ -657,7 +668,7 @@ function ReaderLink:onGoToExternalLink(link_url)
             -- No external link handler
             return false
         end
-        text = T(_("External link:\n\n%1"), link_url)
+        text = T(_("External link:\n\n%1"), BD.url(link_url))
     end
 
     -- Add all alternative handlers buttons
@@ -689,7 +700,8 @@ function ReaderLink:onGoBackLink(show_notification_if_empty)
 end
 
 function ReaderLink:onSwipe(arg, ges)
-    if ges.direction == "east" then
+    local direction = BD.flipDirectionIfMirroredUILayout(ges.direction)
+    if direction == "east" then
         if isSwipeToGoBackEnabled() then
             if #self.location_stack > 0 then
                 -- Remember if location stack is going to be empty, so we
@@ -709,7 +721,7 @@ function ReaderLink:onSwipe(arg, ges)
                 return true
             end
         end
-    elseif ges.direction == "west" then
+    elseif direction == "west" then
         local ret = false
         if isSwipeToFollowNearestLinkEnabled() then
             ret = self:onGoToPageLink(ges, isSwipeIgnoreExternalLinksEnabled(), isFootnoteLinkInPopupEnabled())
@@ -988,13 +1000,15 @@ function ReaderLink:showAsFootnotePopup(link, neglect_current_location)
         -- if not trusted, checks marked (*) don't apply
         flags = flags + 0x0002
     end
+    -- Checks for private CSS properties "-cr-hint: footnote/noteref/..." are
+    -- always done (they can be applied to specific elements or classe names
+    -- with Styles tweaks.)
 
     -- Trust role= and epub:type= attribute values if defined, for source(*) and target
-    -- (If needed, we could add a check for a private CSS property "-cr-hint: footnote"
-    -- or "-cr-hint: noteref", so one can define it to specific classes with Styles
-    -- tweaks.)
     flags = flags + 0x0004
-    -- flags = flags + 0x0008 -- Unused yet
+
+    -- Accept classic FB2 footnotes: body[name="notes" or "comments"] > section
+    flags = flags + 0x0008
 
     -- TARGET STATUS AND SOURCE RELATION
     -- Target must have an anchor #id (ie: must not be a simple link to a html file)
@@ -1062,12 +1076,15 @@ function ReaderLink:showAsFootnotePopup(link, neglect_current_location)
     -- then just ignore the whole stylesheet, including our own declarations
     -- we add at start)
     --
-    -- flags = 0x0000 to get the simplest/purest HTML without CSS
+    -- flags = 0x1001 to get the simplest/purest HTML without CSS, with added
+    -- soft-hyphens where hyphenation is allowed (done by crengine according
+    -- to user's hyphenation settings), and dir= and lang= attributes grabbed
+    -- from parent nodes
     local html
     if extStartXP and extEndXP then
-        html = self.ui.document:getHTMLFromXPointers(extStartXP, extEndXP, 0x0000)
+        html = self.ui.document:getHTMLFromXPointers(extStartXP, extEndXP, 0x1001)
     else
-        html = self.ui.document:getHTMLFromXPointer(target_xpointer, 0x0000, true)
+        html = self.ui.document:getHTMLFromXPointer(target_xpointer, 0x1001, true)
         -- from_final_parent = true to get a possibly more complete footnote
     end
     if not html then

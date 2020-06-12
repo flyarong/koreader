@@ -1,3 +1,4 @@
+local BD = require("ui/bidi")
 local ButtonDialog = require("ui/widget/buttondialog")
 local ButtonDialogTitle = require("ui/widget/buttondialogtitle")
 local Cache = require("cache")
@@ -6,6 +7,7 @@ local ConfirmBox = require("ui/widget/confirmbox")
 local InfoMessage = require("ui/widget/infomessage")
 local Menu = require("ui/widget/menu")
 local MultiInputDialog = require("ui/widget/multiinputdialog")
+local InputDialog = require("ui/widget/inputdialog")
 local NetworkMgr = require("ui/network/manager")
 local OPDSParser = require("ui/opdsparser")
 local Screen = require("device").screen
@@ -36,7 +38,7 @@ local CatalogCache = Cache:new{
 
 local OPDSBrowser = Menu:extend{
     opds_servers = {},
-    calibre_name = _("Local calibre catalog"),
+    calibre_name = _("Local calibre library"),
 
     catalog_type = "application/atom%+xml",
     search_type = "application/opensearchdescription%+xml",
@@ -51,6 +53,9 @@ local OPDSBrowser = Menu:extend{
         ["text/plain"] = "TXT",
         ["application/x-mobipocket-ebook"] = "MOBI",
         ["application/x-mobi8-ebook"] = "AZW3",
+        ["application/x-cbz"] = "CBZ",
+        ["application/x-cbr"] = "CBR",
+        ["application/djvu"] = "DJVU",
     },
 
     width = Screen:getWidth(),
@@ -66,6 +71,11 @@ function OPDSBrowser:init()
           {
             title = "Project Gutenberg",
             url = "http://m.gutenberg.org/ebooks.opds/?format=opds",
+          },
+          {
+            title = "Project Gutenberg [Searchable]",
+            url = "https://m.gutenberg.org/ebooks/search.mobile/?format=opds&query=%s",
+            searchable = true,
           },
           {
              title = "Feedbooks",
@@ -84,9 +94,23 @@ function OPDSBrowser:init()
              url = "http://www.flibusta.is/opds",
           },
           {
+             title = "Flibusta [Ru] [Searchable]",
+             url = "http://www.flibusta.is/opds/search?searchTerm=%s",
+             searchable = true,
+          },
+          {
              title = "textos.info (Spanish)",
              url = "https://www.textos.info/catalogo.atom",
           },
+          {
+             title = "Gallica (French)",
+             url = "https://gallica.bnf.fr/opds",
+          },
+          {
+             title = "Gallica [Fr] [Searchable]",
+             url = "https://gallica.bnf.fr/services/engine/search/opds?operation=searchRetrieve&query=(gallica all \"%s\")",
+             searchable = true,
+          }
         }
         G_reader_settings:saveSetting("opds_servers", servers)
     elseif servers[4] and servers[4].title == "Internet Archive" and servers[4].url == "http://bookserver.archive.org/catalog/"  then
@@ -99,12 +123,14 @@ end
 function OPDSBrowser:addServerFromInput(fields)
     logger.info("input catalog", fields)
     local servers = G_reader_settings:readSetting("opds_servers") or {}
-    table.insert(servers, {
+    local new_server = {
         title = fields[1],
         url = (fields[2]:match("^%a+://") and fields[2] or "http://" .. fields[2]),
+        searchable =  (fields[2]:match("%%s") and true or false),
         username = fields[3],
         password = fields[4],
-    })
+    }
+    table.insert(servers, new_server)
     G_reader_settings:saveSetting("opds_servers", servers)
     self:init()
 end
@@ -238,6 +264,7 @@ function OPDSBrowser:genItemTableFromRoot()
             password = server.password,
             deletable = true,
             editable = true,
+            searchable = server.searchable,
         })
     end
     local calibre_opds = G_reader_settings:readSetting("calibre_opds") or {}
@@ -258,6 +285,7 @@ function OPDSBrowser:genItemTableFromRoot()
             password = calibre_opds.password,
             editable = true,
             deletable = false,
+            searchable = false,
         })
     end
     table.insert(item_table, {
@@ -277,7 +305,7 @@ function OPDSBrowser:fetchFeed(item_url, username, password, method)
     request['url'] = item_url
     request['method'] = method and method or "GET"
     request['sink'] = ltn12.sink.table(sink)
-    request['headers'] = { Authorization = "Basic " .. mime.b64(auth), ["Host"] = hostname, }
+    request['headers'] = username and { Authorization = "Basic " .. mime.b64(auth), ["Host"] = hostname, } or  { ["Host"] = hostname, }
     logger.info("request", request)
     http.TIMEOUT, https.TIMEOUT = 10, 10
     local httpRequest = parsed.scheme == 'http' and http.request or https.request
@@ -303,7 +331,7 @@ function OPDSBrowser:fetchFeed(item_url, username, password, method)
         return
     elseif code == 301 then
         UIManager:show(InfoMessage:new{
-            text = T(_("The catalog has been permanently moved. Please update catalog URL to '%1'."), headers['Location']),
+            text = T(_("The catalog has been permanently moved. Please update catalog URL to '%1'."), BD.url(headers['Location'])),
         })
     elseif code == 401 then
         UIManager:show(InfoMessage:new{
@@ -355,7 +383,7 @@ function OPDSBrowser:getCatalog(item_url, username, password)
     elseif not ok and catalog then
         logger.info("cannot get catalog info from", item_url, catalog)
         UIManager:show(InfoMessage:new{
-            text = T(_("Cannot get catalog info from %1"), (item_url or "")),
+            text = T(_("Cannot get catalog info from %1"), (BD.url(item_url) or "")),
         })
         return
     end
@@ -454,7 +482,17 @@ function OPDSBrowser:genItemTableFromCatalog(catalog, item_url, username, passwo
         local author = "Unknown Author"
         if type(entry.author) == "table" and entry.author.name then
             author = entry.author.name
-            item.text = title .. "\n" .. author
+            if type(author) == "table" then
+                if #author > 0 then
+                    author = table.concat(author, ", ")
+                else
+                    -- we may get an empty table on https://gallica.bnf.fr/opds
+                    author = nil
+                end
+            end
+            if author then
+                item.text = title .. "\n" .. author
+            end
         end
         item.title = title
         item.author = author
@@ -545,7 +583,7 @@ function OPDSBrowser:downloadFile(item, format, remote_url)
                 end
             else
                 UIManager:show(InfoMessage:new {
-                    text = _("Could not save file to:\n") .. local_path,
+                    text = _("Could not save file to:\n") .. BD.filepath(local_path),
                     timeout = 3,
                 })
             end
@@ -559,7 +597,7 @@ function OPDSBrowser:downloadFile(item, format, remote_url)
 
     if lfs.attributes(local_path, "mode") == "file" then
         UIManager:show(ConfirmBox:new {
-            text = T(_("The file %1 already exists. Do you want to overwrite it?"), local_path),
+            text = T(_("The file %1 already exists. Do you want to overwrite it?"), BD.filepath(local_path)),
             ok_text = _("Overwrite"),
             ok_callback = function()
                 download()
@@ -572,7 +610,7 @@ end
 
 function OPDSBrowser:createNewDownloadDialog(path, buttons)
     self.download_dialog = ButtonDialogTitle:new{
-        title = T(_("Download directory:\n%1\n\nDownload file type:"), path),
+        title = T(_("Download directory:\n%1\n\nDownload file type:"), BD.dirpath(path)),
         buttons = buttons
     }
 end
@@ -630,6 +668,52 @@ function OPDSBrowser:showDownloads(item)
     UIManager:show(self.download_dialog)
 end
 
+function OPDSBrowser:browse(browse_url, username, password)
+    logger.dbg("Browse opds url", browse_url)
+    table.insert(self.paths, {
+        url = browse_url,
+        username = username,
+        password = password,
+    })
+    if not self:updateCatalog(browse_url, username, password) then
+        table.remove(self.paths)
+    end
+end
+
+function OPDSBrowser:browseSearchable(browse_url, username, password)
+    self.search_server_dialog = InputDialog:new{
+        title = _("Search OPDS catalog"),
+        input = "",
+        hint = _("Search string"),
+        -- @translators: This is an input hint for something to search for in an OPDS catalog, namely a famous author everyone knows. It probably doesn't need to be localized, but this is just here in case another name or book title would be more appropriate outside of a European context.
+        input_hint = _("Alexandre Dumas"),
+        input_type = "string",
+        description = _("%s in url will be replaced by your input"),
+        buttons = {
+            {
+                {
+                    text = _("Cancel"),
+                    callback = function()
+                        UIManager:close(self.search_server_dialog)
+                    end,
+                },
+                {
+                    text = _("Search"),
+                    is_enter_default = true,
+                    callback = function()
+                        UIManager:close(self.search_server_dialog)
+                        local search = self.search_server_dialog:getInputText():gsub(" ", "+")
+                        local searched_url = browse_url:gsub("%%s", search)
+                        self:browse(searched_url, username, password)
+                    end,
+                },
+            }
+        },
+    }
+    UIManager:show(self.search_server_dialog)
+    self.search_server_dialog:onShowKeyboard()
+end
+
 function OPDSBrowser:onMenuSelect(item)
     -- add catalog
     if item.callback then
@@ -640,13 +724,10 @@ function OPDSBrowser:onMenuSelect(item)
         self:showDownloads(item)
     -- navigation
     else
-        table.insert(self.paths, {
-            url = item.url,
-            username = item.username,
-            password = item.password,
-        })
-        if not self:updateCatalog(item.url, item.username, item.password) then
-            table.remove(self.paths)
+        if item.searchable then
+            self:browseSearchable(item.url, item.username, item.password)
+        else
+            self:browse(item.url, item.username, item.password)
         end
     end
     return true
@@ -659,6 +740,7 @@ function OPDSBrowser:editServerFromInput(item, fields)
         if server.title == item.text or server.url == item.url then
             server.title = fields[1]
             server.url = (fields[2]:match("^%a+://") and fields[2] or "http://" .. fields[2])
+            server.searchable =  (fields[2]:match("%%s") and true or false)
             server.username = fields[3]
             server.password = fields[4]
         end

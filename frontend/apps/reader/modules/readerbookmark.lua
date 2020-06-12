@@ -1,3 +1,4 @@
+local BD = require("ui/bidi")
 local CenterContainer = require("ui/widget/container/centercontainer")
 local ConfirmBox = require("ui/widget/confirmbox")
 local Device = require("device")
@@ -70,19 +71,31 @@ end
 
 function ReaderBookmark:isBookmarkInPageOrder(a, b)
     if self.ui.document.info.has_pages then
+        if a.page == b.page then -- have bookmarks before highlights
+            return a.highlighted
+        end
         return a.page > b.page
     else
-        return self.ui.document:getPageFromXPointer(a.page) >
-                self.ui.document:getPageFromXPointer(b.page)
+        local a_page = self.ui.document:getPageFromXPointer(a.page)
+        local b_page = self.ui.document:getPageFromXPointer(b.page)
+        if a_page == b_page then -- have bookmarks before highlights
+            return a.highlighted
+        end
+        return a_page > b_page
     end
 end
 
 function ReaderBookmark:isBookmarkInReversePageOrder(a, b)
+    -- The way this is used (by getNextBookmarkedPage(), iterating bookmarks
+    -- in reverse order), we want to skip highlights, but also the current
+    -- page: so we do not do any "a.page == b.page" check (not even with
+    -- a reverse logic than the one from above function).
     if self.ui.document.info.has_pages then
         return a.page < b.page
     else
-        return self.ui.document:getPageFromXPointer(a.page) <
-                self.ui.document:getPageFromXPointer(b.page)
+        local a_page = self.ui.document:getPageFromXPointer(a.page)
+        local b_page = self.ui.document:getPageFromXPointer(b.page)
+        return a_page < b_page
     end
 end
 
@@ -196,8 +209,10 @@ function ReaderBookmark:onPosUpdate(pos)
 end
 
 function ReaderBookmark:gotoBookmark(pn_or_xp)
-    local event = self.ui.document.info.has_pages and "GotoPage" or "GotoXPointer"
-    self.ui:handleEvent(Event:new(event, pn_or_xp))
+    if pn_or_xp then
+        local event = self.ui.document.info.has_pages and "GotoPage" or "GotoXPointer"
+        self.ui:handleEvent(Event:new(event, pn_or_xp))
+    end
 end
 
 function ReaderBookmark:onShowBookmark()
@@ -206,7 +221,11 @@ function ReaderBookmark:onShowBookmark()
         local page = v.page
         -- for CREngine, bookmark page is xpointer
         if not self.ui.document.info.has_pages then
-            page = self.ui.document:getPageFromXPointer(page)
+            if self.ui.pagemap and self.ui.pagemap:wantsPageLabels() then
+                page = self.ui.pagemap:getXPointerPageLabel(page, true)
+            else
+                page = self.ui.document:getPageFromXPointer(page)
+            end
         end
         if v.text == nil or v.text == "" then
             v.text = T(_("Page %1 %2 @ %3"), page, v.notes, v.datetime)
@@ -231,7 +250,7 @@ function ReaderBookmark:onShowBookmark()
                     w = Screen:getWidth(),
                     h = Screen:getHeight(),
                 },
-                direction = "east"
+                direction = BD.flipDirectionIfMirroredUILayout("east")
             }
         }
     }
@@ -328,12 +347,8 @@ function ReaderBookmark:getDogearBookmarkIndex(pn_or_xp)
     while _start <= _end do
         _middle = math.floor((_start + _end)/2)
         local v = self.bookmarks[_middle]
-        if self:isBookmarkMatch(v, pn_or_xp) then
-            if v.highlighted then
-                return
-            else
-                return _middle
-            end
+        if not v.highlighted and self:isBookmarkMatch(v, pn_or_xp) then
+            return _middle
         elseif self:isBookmarkInPageOrder({page = pn_or_xp}, v) then
             _end = _middle - 1
         else
@@ -396,6 +411,12 @@ function ReaderBookmark:removeHighlight(item)
         self.ui:handleEvent(Event:new("Unhighlight", item))
     else
         self:removeBookmark(item)
+        -- Update dogear in case we removed a bookmark for current page
+        if self.ui.document.info.has_pages then
+            self:setDogearVisibility(self.view.state.page)
+        else
+            self:setDogearVisibility(self.ui.document:getXPointer())
+        end
     end
 end
 
@@ -564,6 +585,24 @@ function ReaderBookmark:getNextBookmarkedPageFromPage(pn_or_xp)
     end
 end
 
+function ReaderBookmark:getFirstBookmarkedPageFromPage(pn_or_xp)
+    if #self.bookmarks > 0 then
+        local first = #self.bookmarks
+        if self:isBookmarkPageInPageOrder(pn_or_xp, self.bookmarks[first]) then
+            return self.bookmarks[first].page
+        end
+    end
+end
+
+function ReaderBookmark:getLastBookmarkedPageFromPage(pn_or_xp)
+    if #self.bookmarks > 0 then
+        local last = 1
+        if self:isBookmarkPageInReversePageOrder(pn_or_xp, self.bookmarks[last]) then
+            return self.bookmarks[last].page
+        end
+    end
+end
+
 function ReaderBookmark:onGotoPreviousBookmark(pn_or_xp)
     self:gotoBookmark(self:getPreviousBookmarkedPage(pn_or_xp))
     return true
@@ -571,6 +610,16 @@ end
 
 function ReaderBookmark:onGotoNextBookmark(pn_or_xp)
     self:gotoBookmark(self:getNextBookmarkedPage(pn_or_xp))
+    return true
+end
+
+function ReaderBookmark:onGotoNextBookmarkFromPage()
+    self:gotoBookmark(self:getNextBookmarkedPageFromPage(self.ui:getCurrentPage()))
+    return true
+end
+
+function ReaderBookmark:onGotoPreviousBookmarkFromPage()
+    self:gotoBookmark(self:getPreviousBookmarkedPageFromPage(self.ui:getCurrentPage()))
     return true
 end
 
@@ -588,6 +637,24 @@ end
 
 function ReaderBookmark:hasBookmarks()
     return self.bookmarks and #self.bookmarks > 0
+end
+
+function ReaderBookmark:getNumberOfHighlightsAndNotes()
+    local highlights = 0
+    local notes = 0
+    for i = 1, #self.bookmarks do
+        if self.bookmarks[i].highlighted then
+            highlights = highlights + 1
+            -- No real way currently to know which highlights
+            -- have been edited and became "notes". Editing them
+            -- adds this 'text' field, but just showing bookmarks
+            -- do that as well...
+            if self.bookmarks[i].text then
+                notes = notes + 1
+            end
+        end
+    end
+    return highlights, notes
 end
 
 return ReaderBookmark

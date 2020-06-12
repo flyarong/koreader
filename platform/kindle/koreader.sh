@@ -1,4 +1,15 @@
 #!/bin/sh
+
+# NOTE: Stupid workaround to make sure the script we end up running is a *copy*,
+# living in a magical land that doesn't suffer from gross filesystem deficiencies.
+# Otherwise, the vfat+fuse mess means an OTA update will break the script on exit,
+# and potentially leave the user in a broken state, with the WM still paused...
+if [ "$(dirname "${0}")" != "/var/tmp" ]; then
+    cp -pf "${0}" /var/tmp/koreader.sh
+    chmod 777 /var/tmp/koreader.sh
+    exec /var/tmp/koreader.sh "$@"
+fi
+
 export LC_ALL="en_US.UTF-8"
 
 PROC_KEYPAD="/proc/keypad"
@@ -8,6 +19,10 @@ PROC_FIVEWAY="/proc/fiveway"
 
 # KOReader's working directory
 export KOREADER_DIR="/mnt/us/koreader"
+
+# NOTE: Same vfat+fuse shenanigans needed for FBInk, before we source libko...
+cp -pf "${KOREADER_DIR}/fbink" /var/tmp/fbink
+chmod 777 /var/tmp/fbink
 
 # Load our helper functions...
 if [ -f "${KOREADER_DIR}/libkohelper.sh" ]; then
@@ -45,6 +60,7 @@ export AWESOME_STOPPED="no"
 export VOLUMD_STOPPED="no"
 PILLOW_HARD_DISABLED="no"
 PILLOW_SOFT_DISABLED="no"
+USED_WMCTRL="no"
 PASSCODE_DISABLED="no"
 
 REEXEC_FLAGS=""
@@ -111,9 +127,9 @@ ko_update_check() {
         #       and run that one (c.f., #4602)...
         #       This is most likely a side-effect of the weird fuse overlay being used for /mnt/us (vs. the real vfat on /mnt/base-us),
         #       which we cannot use because it's been mounted noexec for a few years now...
-        cp -pf ./tar /var/tmp/gnutar
+        cp -pf "${KOREADER_DIR}/tar" /var/tmp/gnutar
         # shellcheck disable=SC2016
-        /var/tmp/gnutar --no-same-permissions --no-same-owner --checkpoint="${CPOINTS}" --checkpoint-action=exec='./fbink -q -y -6 -P $(($TAR_CHECKPOINT/$CPOINTS))' -C "/mnt/us" -xf "${NEWUPDATE}"
+        /var/tmp/gnutar --no-same-permissions --no-same-owner --checkpoint="${CPOINTS}" --checkpoint-action=exec='/var/tmp/fbink -q -y -6 -P $(($TAR_CHECKPOINT/$CPOINTS))' -C "/mnt/us" -xf "${NEWUPDATE}"
         fail=$?
         # And remove our temporary tar binary...
         rm -f /var/tmp/gnutar
@@ -125,7 +141,9 @@ ko_update_check() {
             eips_print_bottom_centered "KOReader will start momentarily . . ." 1
             # NOTE: Because, yep, that'll probably happen, as there's a high probability sh will throw a bogus syntax error,
             #       probably for the same fuse-related reasons as tar...
-            eips_print_bottom_centered "If it doesn't, you can safely relaunch it!" 0
+            # NOTE: Even if it doesn't necessarily leave the device in an unusable state,
+            #       always recommend a hard-reboot to flush stale ghost copies...
+            eips_print_bottom_centered "If it doesn't, you'll want to force a hard reboot" 0
         else
             # Huh ho...
             logmsg "Update failed :( (${fail})"
@@ -134,6 +152,8 @@ ko_update_check() {
         fi
         rm -f "${NEWUPDATE}" # always purge newupdate in all cases to prevent update loop
         unset BLOCKS CPOINTS
+        # Ensure everything is flushed to disk before we restart. This *will* stall for a while on slow storage!
+        sync
     fi
 }
 # NOTE: Keep doing an initial update check, in addition to one during the restart loop, so we can pickup potential updates of this very script...
@@ -220,9 +240,21 @@ if [ "${STOP_FRAMEWORK}" = "no" ] && [ "${INIT_TYPE}" = "upstart" ]; then
             lipc-set-prop com.lab126.pillow disableEnablePillow disable
             # NOTE: And, oh, joy, on FW >= 5.7.2, this is not enough to prevent the clock from refreshing, so, take the bull by the horns, and SIGSTOP the WM while we run...
             if [ "$(version "${FW_VERSION}")" -ge "$(version "5.7.2")" ]; then
-                logmsg "Stopping awesome . . ."
-                killall -stop awesome
-                AWESOME_STOPPED="yes"
+                # Less drastically, we'll also be "minimizing" (actually, resizing) the title bar manually (c.f., https://www.mobileread.com/forums/showpost.php?p=2449275&postcount=5).
+                # NOTE: Hiding it "works", but has a nasty side-effect of triggering ligl timeouts in some circumstances (c.f., https://github.com/koreader/koreader/pull/5943#issuecomment-598514376)
+                # FIXME: There's apparently a nasty side-effect on FW >= 5.12.4 which somehow softlocks the UI on exit (despite wmctrl succeeding). Don't have the HW to investigate, so, just drop it. (#6117)
+                if [ "$(version "${FW_VERSION}")" -lt "$(version "5.12.4")" ]; then
+                    logmsg "Hiding the title bar . . ."
+                    TITLEBAR_GEOMETRY="$(${KOREADER_DIR}/wmctrl -l -G | grep ":titleBar_ID:" | awk '{print $2,$3,$4,$5,$6}' OFS=',')"
+                    ${KOREADER_DIR}/wmctrl -r ":titleBar_ID:" -e "${TITLEBAR_GEOMETRY%,*},1"
+                    logmsg "Title bar geometry: '${TITLEBAR_GEOMETRY}' -> '$(${KOREADER_DIR}/wmctrl -l -G | grep ":titleBar_ID:" | awk '{print $2,$3,$4,$5,$6}' OFS=',')'"
+                    USED_WMCTRL="yes"
+                fi
+                if [ "${FROM_KUAL}" = "yes" ]; then
+                    logmsg "Stopping awesome . . ."
+                    killall -STOP awesome
+                    AWESOME_STOPPED="yes"
+                fi
             fi
         else
             logmsg "Hiding the status bar . . ."
@@ -247,13 +279,13 @@ fi
 # stop cvm (sysv & framework up only)
 if [ "${STOP_FRAMEWORK}" = "no" ] && [ "${INIT_TYPE}" = "sysv" ]; then
     logmsg "Stopping cvm . . ."
-    killall -stop cvm
+    killall -STOP cvm
 fi
 
 # SIGSTOP volumd, to inhibit USBMS (sysv & upstart)
 if [ -e "/etc/init.d/volumd" ] || [ -e "/etc/upstart/volumd.conf" ]; then
     logmsg "Stopping volumd . . ."
-    killall -stop volumd
+    killall -STOP volumd
     VOLUMD_STOPPED="yes"
 fi
 
@@ -288,13 +320,13 @@ fi
 # Resume volumd, if need be
 if [ "${VOLUMD_STOPPED}" = "yes" ]; then
     logmsg "Resuming volumd . . ."
-    killall -cont volumd
+    killall -CONT volumd
 fi
 
 # Resume cvm (only if we stopped it)
 if [ "${STOP_FRAMEWORK}" = "no" ] && [ "${INIT_TYPE}" = "sysv" ]; then
     logmsg "Resuming cvm . . ."
-    killall -cont cvm
+    killall -CONT cvm
     # We need to handle the screen refresh ourselves, frontend/device/kindle/device.lua's Kindle3.exit is called before we resume cvm ;).
     echo 'send 139' >/proc/keypad
     echo 'send 139' >/proc/keypad
@@ -315,17 +347,15 @@ if [ "${STOP_FRAMEWORK}" = "no" ] && [ "${INIT_TYPE}" = "upstart" ]; then
     # Depending on the FW version, we may have handled things in a few different manners...
     if [ "${AWESOME_STOPPED}" = "yes" ]; then
         logmsg "Resuming awesome . . ."
-        killall -cont awesome
+        killall -CONT awesome
     fi
     if [ "${PILLOW_HARD_DISABLED}" = "yes" ]; then
         logmsg "Enabling pillow . . ."
-        lipc-set-prop com.lab126.pillow disableEnablePillow enable
         # NOTE: Try to leave the user with a slightly more useful FB content than our own last screen...
         cat /var/tmp/koreader-fb.dump >/dev/fb0
         rm -f /var/tmp/koreader-fb.dump
+        lipc-set-prop com.lab126.pillow disableEnablePillow enable
         lipc-set-prop com.lab126.appmgrd start app://com.lab126.booklet.home
-        # NOTE: In case we ever need an extra full flash refresh...
-        #eips -s w=${SCREEN_X_RES},h=${SCREEN_Y_RES} -f
     fi
     if [ "${PILLOW_SOFT_DISABLED}" = "yes" ]; then
         logmsg "Restoring the status bar . . ."
@@ -334,6 +364,23 @@ if [ "${STOP_FRAMEWORK}" = "no" ] && [ "${INIT_TYPE}" = "upstart" ]; then
         rm -f /var/tmp/koreader-fb.dump
         lipc-set-prop com.lab126.pillow interrogatePillow '{"pillowId": "default_status_bar", "function": "nativeBridge.showMe();"}'
         lipc-set-prop com.lab126.appmgrd start app://com.lab126.booklet.home
+    fi
+    if [ "${USED_WMCTRL}" = "yes" ]; then
+        logmsg "Restoring the title bar . . ."
+        # NOTE: Wait and retry for a bit, because apparently there may be timing issues (c.f., #5990)?
+        usleep 250000
+        WMCTRL_COUNT=0
+        until [ "$(${KOREADER_DIR}/wmctrl -l -G | grep ":titleBar_ID:" | awk '{print $2,$3,$4,$5,$6}' OFS=',')" = "${TITLEBAR_GEOMETRY}" ]; do
+            # Abort after 5s
+            if [ ${WMCTRL_COUNT} -gt 20 ]; then
+                log "Giving up on restoring the title bar geometry!"
+                break
+            fi
+            ${KOREADER_DIR}/wmctrl -r ":titleBar_ID:" -e "${TITLEBAR_GEOMETRY}"
+            usleep 250000
+            WMCTRL_COUNT=$((WMCTRL_COUNT + 1))
+        done
+        logmsg "Title bar geometry restored to '$(${KOREADER_DIR}/wmctrl -l -G | grep ":titleBar_ID:" | awk '{print $2,$3,$4,$5,$6}' OFS=',')' (ought to be: '${TITLEBAR_GEOMETRY}') [after ${WMCTRL_COUNT} attempts]"
     fi
 fi
 
@@ -349,5 +396,8 @@ if [ "${PASSCODE_DISABLED}" = "yes" ]; then
     logmsg "Restoring system passcode . . ."
     touch "/var/local/system/userpasswdenabled"
 fi
+
+# Wipe the clones on exit
+rm -f /var/tmp/koreader.sh /var/tmp/fbink
 
 exit ${RETURN_VALUE}

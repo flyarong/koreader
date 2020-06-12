@@ -6,9 +6,9 @@ in the so-called sidecar directory
 
 local DataStorage = require("datastorage")
 local dump = require("dump")
+local ffiutil = require("ffi/util")
 local lfs = require("libs/libkoreader-lfs")
 local logger = require("logger")
-local purgeDir = require("ffi/util").purgeDir
 
 local DocSettings = {}
 
@@ -132,7 +132,7 @@ function DocSettings:open(docfile)
                                    return l[2] > r[2]
                                end
                            end)
-    local ok, stored
+    local ok, stored, filepath
     for _, k in pairs(candidates) do
         -- Ignore empty files
         if lfs.attributes(k[1], "size") > 0 then
@@ -140,6 +140,7 @@ function DocSettings:open(docfile)
             -- Ignore the empty table.
             if ok and next(stored) ~= nil then
                 logger.dbg("data is read from ", k[1])
+                filepath = k[1]
                 break
             end
         end
@@ -149,6 +150,7 @@ function DocSettings:open(docfile)
     if ok and stored then
         new.data = stored
         new.candidates = candidates
+        new.filepath = filepath
     else
         new.data = {}
     end
@@ -187,9 +189,19 @@ function DocSettings:flush()
     local s_out = dump(self.data)
     os.setlocale('C', 'numeric')
     for _, f in pairs(serials) do
+        local directory_updated = false
         if lfs.attributes(f, "mode") == "file" then
-            logger.dbg("Rename ", f, " to ", f .. ".old")
-            os.rename(f, f .. ".old")
+            -- As an additional safety measure (to the ffiutil.fsync* calls
+            -- used below), we only backup the file to .old when it has
+            -- not been modified in the last 60 seconds. This should ensure
+            -- in the case the fsync calls are not supported that the OS
+            -- may have itself sync'ed that file content in the meantime.
+            local mtime = lfs.attributes(f, "modification")
+            if mtime < os.time() - 60 then
+                logger.dbg("Rename ", f, " to ", f .. ".old")
+                os.rename(f, f .. ".old")
+                directory_updated = true -- fsync directory content too below
+            end
         end
         logger.dbg("Write to ", f)
         local f_out = io.open(f, "w")
@@ -197,6 +209,7 @@ function DocSettings:flush()
             f_out:write("-- we can read Lua syntax here!\nreturn ")
             f_out:write(s_out)
             f_out:write("\n")
+            ffiutil.fsyncOpenedFile(f_out) -- force flush to the storage device
             f_out:close()
 
             if self.candidates ~= nil
@@ -212,6 +225,10 @@ function DocSettings:flush()
                 end
             end
 
+            if directory_updated then
+                -- Ensure the file renaming is flushed to storage device
+                ffiutil.fsyncDirectory(f)
+            end
             break
         end
     end
@@ -221,13 +238,17 @@ function DocSettings:close()
     self:flush()
 end
 
+function DocSettings:getFilePath()
+    return self.filepath
+end
+
 --- Purges (removes) sidecar directory.
 function DocSettings:purge()
     if self.history_file then
         os.remove(self.history_file)
     end
     if lfs.attributes(self.sidecar, "mode") == "directory" then
-        purgeDir(self.sidecar)
+        ffiutil.purgeDir(self.sidecar)
     end
     self.data = {}
 end

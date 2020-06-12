@@ -1,3 +1,4 @@
+local BD = require("ui/bidi")
 local CenterContainer = require("ui/widget/container/centercontainer")
 local CloudStorage = require("apps/cloudstorage/cloudstorage")
 local ConfirmBox = require("ui/widget/confirmbox")
@@ -146,8 +147,8 @@ function FileManagerMenu:setUpdateItemTable()
                         value = curr_items,
                         value_min = 6,
                         value_max = 24,
-                        ok_text = _("Set items"),
                         title_text =  _("Items per page"),
+                        keep_shown_on_apply = true,
                         callback = function(spin)
                             G_reader_settings:saveSetting("items_per_page", spin.value)
                             self.ui:onRefresh()
@@ -170,7 +171,7 @@ function FileManagerMenu:setUpdateItemTable()
                         value_min = 10,
                         value_max = 72,
                         default_value = default_font_size,
-                        ok_text = _("Set size"),
+                        keep_shown_on_apply = true,
                         title_text =  _("Maximum font size for item"),
                         callback = function(spin)
                             G_reader_settings:saveSetting("items_font_size", spin.value)
@@ -178,6 +179,16 @@ function FileManagerMenu:setUpdateItemTable()
                         end
                     }
                     UIManager:show(items_font)
+                end
+            },
+            {
+                text = _("Reduce font size to show more text"),
+                keep_menu_open = true,
+                checked_func = function()
+                    return G_reader_settings:isTrue("items_multilines_show_more_text")
+                end,
+                callback = function()
+                    G_reader_settings:flipNilOrFalse("items_multilines_show_more_text")
                 end
             }
         }
@@ -376,6 +387,81 @@ function FileManagerMenu:setUpdateItemTable()
             end,
         })
     end
+    if Device:isAndroid() then
+        table.insert(self.menu_items.developer_options.sub_item_table, {
+            text = _("Start E-ink test"),
+            callback = function()
+                Device:epdTest()
+            end,
+        })
+    end
+
+    table.insert(self.menu_items.developer_options.sub_item_table, {
+        text = _("Disable enhanced UI text shaping (xtext)"),
+        checked_func = function()
+            return G_reader_settings:isFalse("use_xtext")
+        end,
+        callback = function()
+            G_reader_settings:flipNilOrTrue("use_xtext")
+            local InfoMessage = require("ui/widget/infomessage")
+            UIManager:show(InfoMessage:new{
+                text = _("This will take effect on next restart."),
+            })
+        end,
+    })
+    table.insert(self.menu_items.developer_options.sub_item_table, {
+        text = "UI layout mirroring and text direction",
+        sub_item_table = {
+            {
+                text = _("Reverse UI layout mirroring"),
+                checked_func = function()
+                    return G_reader_settings:isTrue("dev_reverse_ui_layout_mirroring")
+                end,
+                callback = function()
+                    G_reader_settings:flipNilOrFalse("dev_reverse_ui_layout_mirroring")
+                    local InfoMessage = require("ui/widget/infomessage")
+                    UIManager:show(InfoMessage:new{
+                        text = _("This will take effect on next restart."),
+                    })
+                end
+            },
+            {
+                text = _("Reverse UI text direction"),
+                checked_func = function()
+                    return G_reader_settings:isTrue("dev_reverse_ui_text_direction")
+                end,
+                callback = function()
+                    G_reader_settings:flipNilOrFalse("dev_reverse_ui_text_direction")
+                    local InfoMessage = require("ui/widget/infomessage")
+                    UIManager:show(InfoMessage:new{
+                        text = _("This will take effect on next restart."),
+                    })
+                end
+            }
+        }
+    })
+    table.insert(self.menu_items.developer_options.sub_item_table, {
+        text_func = function()
+            if G_reader_settings:nilOrTrue("use_cre_call_cache")
+                    and G_reader_settings:isTrue("use_cre_call_cache_log_stats") then
+                return _("Enable CRE call cache (with stats)")
+            end
+            return _("Enable CRE call cache")
+        end,
+        checked_func = function()
+            return G_reader_settings:nilOrTrue("use_cre_call_cache")
+        end,
+        callback = function()
+            G_reader_settings:flipNilOrTrue("use_cre_call_cache")
+            -- No need to show "This will take effect on next CRE book opening."
+            -- as this menu is only accessible from file browser
+        end,
+        hold_callback = function(touchmenu_instance)
+            G_reader_settings:flipNilOrFalse("use_cre_call_cache_log_stats")
+            touchmenu_instance:updateItems()
+        end,
+    })
+
     self.menu_items.cloud_storage = {
         text = _("Cloud storage"),
         callback = function()
@@ -391,7 +477,7 @@ function FileManagerMenu:setUpdateItemTable()
 
     -- search tab
     self.menu_items.find_book_in_calibre_catalog = {
-        text = _("Find a book in calibre catalog"),
+        text = _("Find a book via calibre metadata"),
         callback = function()
             Search:getCalibre()
             Search:ShowSearch()
@@ -413,7 +499,7 @@ function FileManagerMenu:setUpdateItemTable()
             end
             local last_file = G_reader_settings:readSetting("lastfile")
             local path, file_name = util.splitFilePathName(last_file); -- luacheck: no unused
-            return T(_("Last: %1"), file_name)
+            return T(_("Last: %1"), BD.filename(file_name))
         end,
         enabled_func = function()
             return G_reader_settings:readSetting("lastfile") ~= nil
@@ -424,7 +510,7 @@ function FileManagerMenu:setUpdateItemTable()
         hold_callback = function()
             local last_file = G_reader_settings:readSetting("lastfile")
             UIManager:show(ConfirmBox:new{
-                text = T(_("Would you like to open the last document: %1?"), last_file),
+                text = T(_("Would you like to open the last document: %1?"), BD.filepath(last_file)),
                 ok_text = _("OK"),
                 ok_callback = function()
                     self:openLastDoc()
@@ -556,10 +642,10 @@ function FileManagerMenu:_getTabIndexFromLocation(ges)
         return last_tab_index
     -- if the start position is far right
     elseif ges.pos.x > 2 * Screen:getWidth() / 3 then
-        return #self.tab_item_table
+        return BD.mirroredUILayout() and 1 or #self.tab_item_table
     -- if the start position is far left
     elseif ges.pos.x < Screen:getWidth() / 3 then
-        return 1
+        return BD.mirroredUILayout() and #self.tab_item_table or 1
     -- if center return the last index
     else
         return last_tab_index

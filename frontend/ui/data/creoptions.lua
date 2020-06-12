@@ -3,16 +3,15 @@ local S = require("ui/data/strings")
 local optionsutil = require("ui/data/optionsutil")
 local _ = require("gettext")
 
--- add multiply operator to Aa dict
-local Aa = setmetatable({"Aa"}, {
-    __mul = function(t, mul)
-        local new = {}
-        for i = 1, mul do
-            for _, v in ipairs(t) do table.insert(new, v) end
-        end
-        return new
+-- Get font size numbers as a table of strings
+local tableOfNumbersToTableOfStrings = function(numbers)
+    local t = {}
+    for i, v in ipairs(numbers) do
+        -- We turn 17.5 into 17<sup>5</sup>
+        table.insert(t, tostring(v%1==0 and v or (v-v%1).."⁵"))
     end
-})
+    return t
+end
 
 local CreOptions = {
     prefix = 'copt',
@@ -185,15 +184,15 @@ In the top menu → Settings → Status bar, you can choose whether the bottom m
             {
                 name = "view_mode",
                 name_text = S.VIEW_MODE,
-                toggle = {S.VIEW_SCROLL, S.VIEW_PAGE},
-                values = {1, 0},
+                toggle = {S.VIEW_PAGE, S.VIEW_SCROLL},
+                values = {0, 1},
                 default_value = 0,
-                args = {"scroll", "page"},
+                args = {"page", "scroll"},
                 default_arg = "page",
                 event = "SetViewMode",
                 name_text_hold_callback = optionsutil.showValues,
-                help_text = _([[- 'scroll' mode allows you to scroll the text like you would in a web browser (the 'Page Overlap' setting is only available in this mode).
-- 'page' mode splits the text into pages, at the most acceptable places (page numbers and the number of pages may change when you change fonts, margins, styles, etc.).]]),
+                help_text = _([[- 'page' mode splits the text into pages, at the most acceptable places (page numbers and the number of pages may change when you change fonts, margins, styles, etc.).
+- 'continuous' mode allows you to scroll the text like you would in a web browser (the 'Page Overlap' setting is only available in this mode).]]),
             },
             {
                 name = "block_rendering_mode",
@@ -254,8 +253,8 @@ Note that your selected font size is not affected by this setting.]]),
                 default_value = DCREREADER_CONFIG_LINE_SPACE_PERCENT_MEDIUM,
                 more_options = true,
                 more_options_param = {
-                  value_min = 70,
-                  value_max = 130,
+                  value_min = 50,
+                  value_max = 300,
                   value_step = 1,
                   value_hold_step = 5,
                 },
@@ -277,8 +276,10 @@ Note that your selected font size is not affected by this setting.]]),
                 },
                 name_text_hold_callback = optionsutil.showValues,
                 -- used by showValues
-                name_text_suffix = "%",
                 name_text_true_values = true,
+                show_true_value_func = function(val) -- add "%"
+                    return string.format("%d%%", val)
+                end,
             },
         }
     },
@@ -287,7 +288,7 @@ Note that your selected font size is not affected by this setting.]]),
         options = {
             {
                 name = "font_size",
-                item_text = Aa * #DCREREADER_CONFIG_FONT_SIZES,
+                item_text = tableOfNumbersToTableOfStrings(DCREREADER_CONFIG_FONT_SIZES),
                 item_align_center = 1.0,
                 spacing = 15,
                 item_font_size = DCREREADER_CONFIG_FONT_SIZES,
@@ -298,7 +299,7 @@ Note that your selected font size is not affected by this setting.]]),
             },
             {
                 name = "font_fine_tune",
-                name_text = S.FONTSIZE_FINE_TUNING,
+                name_text = S.FONT_SIZE,
                 toggle = Device:isTouchDevice() and {S.DECREASE, S.INCREASE} or nil,
                 item_text = not Device:isTouchDevice() and {S.DECREASE, S.INCREASE} or nil,
                 more_options = true,
@@ -323,7 +324,83 @@ Note that your selected font size is not affected by this setting.]]),
                     }
                     optionsutil.showValues(configurable, opt, prefix)
                 end,
-            }
+            },
+            {
+                name = "word_spacing",
+                name_text = S.WORD_SPACING,
+                more_options = true,
+                more_options_param = {
+                    name = "word_spacing",
+                    name_text = _("Word spacing"),
+                    info_text = _([[Set word spacing percentages:
+- how much to scale the width of each space character from its regular width,
+- by how much some of them can then be reduced to make more words fit on a line.]]),
+                    left_text = _("Scaling %"),
+                    left_min = 10,
+                    left_max = 500,
+                    left_step = 1,
+                    left_hold_step = 10,
+                    right_text = _("Reduction %"),
+                    right_min = 25,
+                    right_max = 100,
+                    right_step = 1,
+                    right_hold_step = 10,
+                    event = "SetWordSpacing",
+                },
+                toggle = {S.SMALL, S.MEDIUM, S.LARGE},
+                values = {
+                    DCREREADER_CONFIG_WORD_SPACING_SMALL,
+                    DCREREADER_CONFIG_WORD_SPACING_MEDIUM,
+                    DCREREADER_CONFIG_WORD_SPACING_LARGE,
+                },
+                default_value = DCREREADER_CONFIG_WORD_SPACING_MEDIUM,
+                args = {
+                    DCREREADER_CONFIG_WORD_SPACING_SMALL,
+                    DCREREADER_CONFIG_WORD_SPACING_MEDIUM,
+                    DCREREADER_CONFIG_WORD_SPACING_LARGE,
+                },
+                event = "SetWordSpacing",
+                help_text = _([[Tells the rendering engine by how much to scale the width of each 'space' character in the text from its regular width, and by how much it can additionally reduce them to make more words fit on a line (100% means no reduction).]]),
+                name_text_hold_callback = optionsutil.showValues,
+                name_text_true_values = true,
+                show_true_value_func = function(val)
+                    return string.format("%d%%, %d%%", val[1], val[2])
+                end,
+            },
+            {
+                name = "word_expansion",
+                name_text = S.WORD_EXPANSION,
+                more_options = true,
+                more_options_param = {
+                    value_min = 0,
+                    value_max = 20,
+                    value_step = 1,
+                    value_hold_step = 4,
+                    name = "word_expansion",
+                    name_text = _("Max word expansion"),
+                    info_text = _([[Set max word expansion as a % of the font size.]]),
+                    event = "SetWordExpansion",
+                },
+                toggle = {S.NONE, S.SOME, S.MORE},
+                values = {
+                    DCREREADER_CONFIG_WORD_EXPANSION_NONE,
+                    DCREREADER_CONFIG_WORD_EXPANSION_SOME,
+                    DCREREADER_CONFIG_WORD_EXPANSION_MORE,
+                },
+                default_value = DCREREADER_CONFIG_WORD_EXPANSION_NONE,
+                args = {
+                    DCREREADER_CONFIG_WORD_EXPANSION_NONE,
+                    DCREREADER_CONFIG_WORD_EXPANSION_SOME,
+                    DCREREADER_CONFIG_WORD_EXPANSION_MORE,
+                },
+                event = "SetWordExpansion",
+                help_text = _([[On justified lines having too wide spaces, allow distributing the excessive space into words by expanding them with letter spacing. This sets the max allowed letter spacing as a % of the font size.]]),
+                name_text_hold_callback = optionsutil.showValues,
+                name_text_true_values = true,
+                show_true_value_func = function(val)
+                    return string.format("%d%%", val)
+                end,
+            },
         }
     },
     {
@@ -398,28 +475,6 @@ Note that your selected font size is not affected by this setting.]]),
 
 (Font Hinting may need to be adjusted for the best result with either kerning implementation.)]]),
             },
-            {
-                name = "space_condensing",
-                name_text = S.WORD_GAP,
-                toggle = {S.SMALL, S.MEDIUM, S.LARGE},
-                values = {
-                    DCREREADER_CONFIG_WORD_GAP_SMALL,
-                    DCREREADER_CONFIG_WORD_GAP_MEDIUM,
-                    DCREREADER_CONFIG_WORD_GAP_LARGE,
-                },
-                default_value = DCREREADER_CONFIG_WORD_GAP_MEDIUM,
-                args = {
-                    DCREREADER_CONFIG_WORD_GAP_SMALL,
-                    DCREREADER_CONFIG_WORD_GAP_MEDIUM,
-                    DCREREADER_CONFIG_WORD_GAP_LARGE,
-                    },
-                event = "SetSpaceCondensing",
-                name_text_hold_callback = optionsutil.showValues,
-                -- used by showValues
-                name_text_suffix = "%",
-                name_text_true_values = true,
-                help_text = _([[Tells the rendering engine how much each 'space' character in the text can be reduced from its regular width to make words fit on a line (100% means no reduction).]]),
-            }
         }
     },
     {
@@ -427,24 +482,25 @@ Note that your selected font size is not affected by this setting.]]),
         options = {
             {
                 name = "status_line",
-                name_text = S.PROGRESS_BAR,
-                toggle = {S.FULL, S.MINI},
-                values = {0, 1},
-                default_value = DCREREADER_PROGRESS_BAR,
-                args = {0, 1},
-                default_arg = DCREREADER_PROGRESS_BAR,
+                name_text = S.ALT_STATUS_BAR,
+                toggle = {S.OFF, S.ON},
+                values = {1, 0},
+                default_value = 1, -- Note that 1 means KOReader (bottom) status bar only
+                args = {1, 0},
+                default_arg = 1,
                 event = "SetStatusLine",
                 name_text_hold_callback = optionsutil.showValues,
-                help_text = _([[- 'full' displays a status bar at the top of the screen (this status bar can't be customized).
-- 'mini' displays a status bar at the bottom of the screen, which can be toggled by tapping. The items displayed can be customized via the main menu.]]),
+                help_text = _([[Enable or disable the rendering engine alternative status bar at the top of the screen (this status bar can't be customized).
+
+Whether enabled or disabled, KOReader's own status bar at the bottom of the screen can be toggled by tapping. The items displayed can be customized via the main menu.]]),
             },
             {
                 name = "embedded_css",
                 name_text = S.EMBEDDED_STYLE,
-                toggle = {S.ON, S.OFF},
-                values = {1, 0},
+                toggle = {S.OFF, S.ON},
+                values = {0, 1},
                 default_value = 1,
-                args = {true, false},
+                args = {false, true},
                 default_arg = nil,
                 event = "ToggleEmbeddedStyleSheet",
                 name_text_hold_callback = optionsutil.showValues,
@@ -454,10 +510,10 @@ Note that your selected font size is not affected by this setting.]]),
             {
                 name = "embedded_fonts",
                 name_text = S.EMBEDDED_FONTS,
-                toggle = {S.ON, S.OFF},
-                values = {1, 0},
+                toggle = {S.OFF, S.ON},
+                values = {0, 1},
                 default_value = 1,
-                args = {true, false},
+                args = {false, true},
                 default_arg = nil,
                 event = "ToggleEmbeddedFonts",
                 enabled_func = function(configurable)

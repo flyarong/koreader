@@ -1,3 +1,4 @@
+local BD = require("ui/bidi")
 local Blitbuffer = require("ffi/blitbuffer")
 local Button = require("ui/widget/button")
 local CenterContainer = require("ui/widget/container/centercontainer")
@@ -62,12 +63,13 @@ function SkimToWidget:init()
          }
     end
     local dialog_title = _("Skim")
-    if self.document.info.has_pages then
-        self.curr_page = self.ui.paging.current_page
-    else
-        self.curr_page = self.document:getCurrentPage()
-    end
+    self.curr_page = self.ui:getCurrentPage()
     self.page_count = self.document:getPageCount()
+
+    local curr_page_display = tostring(self.curr_page)
+    if self.ui.pagemap and self.ui.pagemap:wantsPageLabels() then
+        curr_page_display = self.ui.pagemap:getCurrentPageLabel(true)
+    end
 
     local ticks_candidates = {}
     if self.ui.toc then
@@ -91,7 +93,7 @@ function SkimToWidget:init()
             text = dialog_title,
             face = self.title_face,
             bold = true,
-            width = self.screen_width * 0.95,
+            max_width = self.screen_width * 0.95,
         },
     }
 
@@ -133,10 +135,7 @@ function SkimToWidget:init()
         width = self.button_width,
         show_parent = self,
         callback = function()
-            self.curr_page = self.curr_page - 1
-            self:update()
-            self:addOriginToLocationStack()
-            self.ui:handleEvent(Event:new("GotoPage", self.curr_page))
+            self:goToPage(self.curr_page - 1)
         end,
     }
     local button_minus_ten = Button:new{
@@ -148,10 +147,7 @@ function SkimToWidget:init()
         width = self.button_width,
         show_parent = self,
         callback = function()
-            self.curr_page = self.curr_page - 10
-            self:update()
-            self:addOriginToLocationStack()
-            self.ui:handleEvent(Event:new("GotoPage", self.curr_page))
+            self:goToPage(self.curr_page - 10)
         end,
     }
     local button_plus = Button:new{
@@ -163,10 +159,7 @@ function SkimToWidget:init()
         width = self.button_width,
         show_parent = self,
         callback = function()
-            self.curr_page = self.curr_page + 1
-            self:update()
-            self:addOriginToLocationStack()
-            self.ui:handleEvent(Event:new("GotoPage", self.curr_page))
+            self:goToPage(self.curr_page + 1)
         end,
     }
     local button_plus_ten = Button:new{
@@ -178,14 +171,11 @@ function SkimToWidget:init()
         width = self.button_width,
         show_parent = self,
         callback = function()
-            self.curr_page = self.curr_page + 10
-            self:update()
-            self:addOriginToLocationStack()
-            self.ui:handleEvent(Event:new("GotoPage", self.curr_page))
+            self:goToPage(self.curr_page + 10)
         end,
     }
     self.current_page_text = Button:new{
-        text = self.curr_page,
+        text = curr_page_display,
         bordersize = 0,
         margin = self.button_margin,
         radius = 0,
@@ -198,8 +188,16 @@ function SkimToWidget:init()
         end,
     }
 
+    local chapter_next_text = "▷│"
+    local chapter_prev_text = "│◁"
+    local bookmark_next_text = "☆▷"
+    local bookmark_prev_text = "◁☆"
+    if BD.mirroredUILayout() then
+        chapter_next_text, chapter_prev_text = chapter_prev_text, chapter_next_text
+        bookmark_next_text, bookmark_prev_text = bookmark_prev_text, bookmark_next_text
+    end
     local button_chapter_next = Button:new{
-        text = '▷│',
+        text = chapter_next_text,
         bordersize = self.button_bordersize,
         margin = self.button_margin,
         radius = 0,
@@ -209,16 +207,16 @@ function SkimToWidget:init()
         callback = function()
             local page = self:getNextChapter(self.curr_page)
             if page and page >=1 and page <= self.page_count then
-                self.curr_page = page
-                self:addOriginToLocationStack()
-                self.ui:handleEvent(Event:new("GotoPage", self.curr_page))
-                self:update()
+                self:goToPage(page)
             end
+        end,
+        hold_callback = function()
+            self:goToPage(self.page_count)
         end,
     }
 
     local button_chapter_prev = Button:new{
-        text = "│◁",
+        text = chapter_prev_text,
         bordersize = self.button_bordersize,
         margin = self.button_margin,
         radius = 0,
@@ -228,16 +226,16 @@ function SkimToWidget:init()
         callback = function()
             local page = self:getPrevChapter(self.curr_page)
             if page and page >=1 and page <= self.page_count then
-                self.curr_page = page
-                self:addOriginToLocationStack()
-                self.ui:handleEvent(Event:new("GotoPage", self.curr_page))
-                self:update()
+                self:goToPage(page)
             end
+        end,
+        hold_callback = function()
+            self:goToPage(1)
         end,
     }
 
     local button_bookmark_next = Button:new{
-        text = "☆▷",
+        text = bookmark_next_text,
         bordersize = self.button_bordersize,
         margin = self.button_margin,
         radius = 0,
@@ -245,27 +243,16 @@ function SkimToWidget:init()
         width = self.button_width,
         show_parent = self,
         callback = function()
-            local page
-            if self.document.info.has_pages then
-                page = self.ui.bookmark:getNextBookmarkedPageFromPage(self.ui.paging.current_page)
-            else
-                page = self.ui.bookmark:getNextBookmarkedPageFromPage(self.curr_page)
-            end
-            if page then
-                self:addOriginToLocationStack()
-                self.ui.bookmark:gotoBookmark(page)
-                if self.document.info.has_pages then
-                    self.curr_page = self.ui.paging.current_page
-                else
-                    self.curr_page = self.document:getCurrentPage()
-                end
-                self:update()
-            end
+            self:goToByEvent("GotoNextBookmarkFromPage")
+        end,
+        hold_callback = function()
+            local page = self.ui.bookmark:getLastBookmarkedPageFromPage(self.ui:getCurrentPage())
+            self:goToBookmark(page)
         end,
     }
 
     local button_bookmark_prev = Button:new{
-        text = "◁☆",
+        text = bookmark_prev_text,
         bordersize = self.button_bordersize,
         margin = self.button_margin,
         radius = 0,
@@ -273,22 +260,11 @@ function SkimToWidget:init()
         width = self.button_width,
         show_parent = self,
         callback = function()
-            local page
-            if self.document.info.has_pages then
-                page = self.ui.bookmark:getPreviousBookmarkedPageFromPage(self.ui.paging.current_page)
-            else
-                page = self.ui.bookmark:getPreviousBookmarkedPageFromPage(self.curr_page)
-            end
-            if page then
-                self:addOriginToLocationStack()
-                self.ui.bookmark:gotoBookmark(page)
-                if self.document.info.has_pages then
-                    self.curr_page = self.ui.paging.current_page
-                else
-                    self.curr_page = self.document:getCurrentPage()
-                end
-                self:update()
-            end
+            self:goToByEvent("GotoPreviousBookmarkFromPage")
+        end,
+        hold_callback = function()
+            local page = self.ui.bookmark:getFirstBookmarkedPageFromPage(self.ui:getCurrentPage())
+            self:goToBookmark(page)
         end,
     }
 
@@ -365,7 +341,11 @@ function SkimToWidget:update()
         self.curr_page = self.page_count
     end
     self.progress_bar.percentage = self.curr_page / self.page_count
-    self.current_page_text:setText(self.curr_page, self.current_page_text.width)
+    local curr_page_display = tostring(self.curr_page)
+    if self.ui.pagemap and self.ui.pagemap:wantsPageLabels() then
+        curr_page_display = self.ui.pagemap:getCurrentPageLabel(true)
+    end
+    self.current_page_text:setText(curr_page_display, self.current_page_text.width)
 end
 
 function SkimToWidget:addOriginToLocationStack(add_current)
@@ -413,6 +393,31 @@ function SkimToWidget:onShow()
     return true
 end
 
+function SkimToWidget:goToPage(page)
+    self.curr_page = page
+    self:addOriginToLocationStack()
+    self.ui:handleEvent(Event:new("GotoPage", self.curr_page))
+    self:update()
+end
+
+function SkimToWidget:goToBookmark(page)
+    if page then
+        self:addOriginToLocationStack()
+        self.ui.bookmark:gotoBookmark(page)
+        self.curr_page = self.ui:getCurrentPage()
+        self:update()
+    end
+end
+
+function SkimToWidget:goToByEvent(event_name)
+    if event_name then
+        self:addOriginToLocationStack()
+        self.ui:handleEvent(Event:new(event_name))
+        self.curr_page = self.ui:getCurrentPage()
+        self:update()
+    end
+end
+
 function SkimToWidget:onAnyKeyPressed()
     UIManager:close(self)
     return true
@@ -420,9 +425,10 @@ end
 
 function SkimToWidget:onTapProgress(arg, ges_ev)
     if ges_ev.pos:intersectWith(self.progress_bar.dimen) then
-        local width = self.progress_bar.dimen.w
-        local pos = ges_ev.pos.x - self.progress_bar.dimen.x
-        local perc = pos / width
+        local perc = self.progress_bar:getPercentageFromPosition(ges_ev.pos)
+        if not perc then
+            return true
+        end
         local page = Math.round(perc * self.page_count)
         self:addOriginToLocationStack()
         self.ui:handleEvent(Event:new("GotoPage", page ))

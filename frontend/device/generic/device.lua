@@ -29,6 +29,7 @@ local Device = {
     hasKeyboard = no,
     hasKeys = no,
     hasDPad = no,
+    hasFewKeys = no,
     hasWifiToggle = yes,
     hasWifiManager = no,
     isHapticFeedbackEnabled = no,
@@ -45,6 +46,8 @@ local Device = {
     canUseCBB = yes, -- The C BB maintains a 1:1 feature parity with the Lua BB, except that is has NO support for BB4, and limited support for BBRGB24
     hasColorScreen = no,
     hasBGRFrameBuffer = no,
+    canImportFiles = no,
+    canShareText = no,
     canToggleGSensor = no,
     canToggleMassStorage = no,
     canUseWAL = yes, -- requires mmap'ed I/O on the target FS
@@ -61,6 +64,7 @@ local Device = {
     isKindle = no,
     isKobo = no,
     isPocketBook = no,
+    isRemarkable = no,
     isSonyPRSTUX = no,
     isSDL = no,
     isEmulator = no,
@@ -203,7 +207,7 @@ function Device:onPowerEvent(ev)
                     network_manager:scheduleConnectivityCheck()
                 end
                 self:resume()
-                -- restore to previous rotation mode, if need be.
+                -- Restore to previous rotation mode, if need be.
                 if self.orig_rotation_mode then
                     self.screen:setRotationMode(self.orig_rotation_mode)
                 end
@@ -226,18 +230,25 @@ function Device:onPowerEvent(ev)
         self.powerd:beforeSuspend()
         local UIManager = require("ui/uimanager")
         logger.dbg("Suspending...")
-        -- Mostly always suspend in portrait mode...
-        -- ... except when we just show an InfoMessage, it plays badly with landscape mode (c.f., #4098)
-        if G_reader_settings:readSetting("screensaver_type") ~= "message" then
+        -- Mostly always suspend in Portrait/Inverted Portrait mode...
+        -- ... except when we just show an InfoMessage or when the screensaver
+        -- is disabled, as it plays badly with Landscape mode (c.f., #4098 and #5290)
+        local screensaver_type = G_reader_settings:readSetting("screensaver_type")
+        if screensaver_type ~= "message" and screensaver_type ~= "disable" then
             self.orig_rotation_mode = self.screen:getRotationMode()
-            self.screen:setRotationMode(0)
+            -- Leave Portrait & Inverted Portrait alone, that works just fine.
+            if bit.band(self.orig_rotation_mode, 1) == 1 then
+                -- i.e., only switch to Portrait if we're currently in *any* Landscape orientation (odd number)
+                self.screen:setRotationMode(0)
+            else
+                self.orig_rotation_mode = nil
+            end
 
             -- On eInk, if we're using a screensaver mode that shows an image,
             -- flash the screen to white first, to eliminate ghosting.
             if self:hasEinkScreen() and
-               G_reader_settings:readSetting("screensaver_type") == "cover" or
-               G_reader_settings:readSetting("screensaver_type") == "random_image" or
-               G_reader_settings:readSetting("screensaver_type") == "image_file" then
+               screensaver_type == "cover" or screensaver_type == "random_image" or
+               screensaver_type == "image_file" then
                 if not G_reader_settings:isTrue("screensaver_no_background") then
                     self.screen:clear()
                 end

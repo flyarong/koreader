@@ -33,9 +33,11 @@ local Button = InputContainer:new{
     text = nil, -- mandatory
     text_func = nil,
     icon = nil,
+    icon_rotation_angle = 0,
     preselect = false,
     callback = nil,
     enabled = true,
+    allow_hold_when_disabled = false,
     margin = 0,
     bordersize = Size.border.button,
     background = Blitbuffer.COLOR_WHITE,
@@ -74,6 +76,7 @@ function Button:init()
     else
         self.label_widget = ImageWidget:new{
             file = self.icon,
+            rotation_angle = self.icon_rotation_angle,
             dim = not self.enabled,
             scale_for_dpi = true,
         }
@@ -259,7 +262,7 @@ function Button:onTapSelectButton()
 end
 
 function Button:onHoldSelectButton()
-    if self.enabled and self.hold_callback then
+    if self.hold_callback and (self.enabled or self.allow_hold_when_disabled) then
         self.hold_callback()
     elseif self.hold_input then
         self:onInput(self.hold_input, true)
@@ -275,7 +278,7 @@ function Button:onHoldReleaseSelectButton()
     -- Safe-guard for when used inside a MovableContainer,
     -- which would handle HoldRelease and process it like
     -- a Hold if we wouldn't return true here
-    if self.enabled and self.hold_callback then
+    if self.hold_callback and (self.enabled or self.allow_hold_when_disabled) then
         return true
     elseif self.hold_input or type(self.hold_input_func) == "function" then
         return true

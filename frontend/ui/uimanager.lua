@@ -13,12 +13,13 @@ local Input = Device.input
 local Screen = Device.screen
 
 local MILLION = 1000000
+local DEFAULT_FULL_REFRESH_COUNT = 6
 
 -- there is only one instance of this
 local UIManager = {
     -- trigger a full refresh when counter reaches FULL_REFRESH_COUNT
     FULL_REFRESH_COUNT =
-        G_reader_settings:readSetting("full_refresh_count") or DRCOUNTMAX,
+        G_reader_settings:readSetting("full_refresh_count") or DEFAULT_FULL_REFRESH_COUNT,
     refresh_count = 0,
 
     -- How long to wait between ZMQ wakeups: 50ms.
@@ -68,7 +69,7 @@ function UIManager:init()
     self.reboot_action = function()
         self._entered_poweroff_stage = true;
         Screen:setRotationMode(0)
-        require("ui/screensaver"):show("reboot", _("Rebooting..."))
+        require("ui/screensaver"):show("reboot", _("Rebooting…"))
         if Device:needsScreenRefreshAfterResume() then
             Screen:refreshFull()
         end
@@ -191,6 +192,37 @@ function UIManager:init()
             Device:usbPlugOut()
             self:_afterNotCharging()
         end
+    elseif Device:isRemarkable() then
+        self.event_handlers["PowerPress"] = function()
+            UIManager:scheduleIn(2, self.poweroff_action)
+        end
+        self.event_handlers["PowerRelease"] = function()
+            if not self._entered_poweroff_stage then
+                UIManager:unschedule(self.poweroff_action)
+                -- resume if we were suspended
+                if Device.screen_saver_mode then
+                    self:resume()
+                else
+                    self:suspend()
+                end
+            end
+        end
+        self.event_handlers["Suspend"] = function()
+            self:_beforeSuspend()
+            Device:intoScreenSaver()
+            Device:suspend()
+        end
+        self.event_handlers["Resume"] = function()
+            Device:resume()
+            Device:outofScreenSaver()
+            self:_afterResume()
+        end
+        self.event_handlers["__default__"] = function(input_event)
+            -- Same as in Kobo: we want to ignore keys during suspension
+            if not Device.screen_saver_mode then
+                self:sendEvent(input_event)
+            end
+        end
     elseif Device:isSonyPRSTUX() then
         self.event_handlers["PowerPress"] = function()
             UIManager:scheduleIn(2, self.poweroff_action)
@@ -215,6 +247,23 @@ function UIManager:init()
             Device:resume()
             Device:outofScreenSaver()
             self:_afterResume()
+        end
+        self.event_handlers["Charging"] = function()
+            self:_beforeCharging()
+        end
+        self.event_handlers["NotCharging"] = function()
+            self:_afterNotCharging()
+        end
+        self.event_handlers["UsbPlugIn"] = function()
+            if Device.screen_saver_mode then
+                Device:resume()
+                Device:outofScreenSaver()
+                self:_afterResume()
+            end
+            Device:usbPlugIn()
+        end
+        self.event_handlers["UsbPlugOut"] = function()
+            Device:usbPlugOut()
         end
         self.event_handlers["__default__"] = function(input_event)
             -- Same as in Kobo: we want to ignore keys during suspension
@@ -490,15 +539,15 @@ the second parameter (refreshtype) can either specify a refreshtype
 or a function that returns refreshtype AND refreshregion and is called
 after painting the widget.
 Here's a quick rundown of what each refreshtype should be used for:
-full: high-fidelity flashing refresh (f.g., large images).
+full: high-fidelity flashing refresh (e.g., large images).
       Highest quality, but highest latency.
       Don't abuse if you only want a flash (in this case, prefer flashpartial or flashui).
-partial: medium fidelity refresh (f.g., text on a white background).
+partial: medium fidelity refresh (e.g., text on a white background).
          Can be promoted to flashing after FULL_REFRESH_COUNT refreshes.
          Don't abuse to avoid spurious flashes.
-ui: medium fidelity refresh (f.g., mixed content).
+ui: medium fidelity refresh (e.g., mixed content).
     Should apply to most UI elements.
-fast: low fidelity refresh (f.g., monochrome content).
+fast: low fidelity refresh (e.g., monochrome content).
       Should apply to most highlighting effects achieved through inversion.
       Note that if your highlighted element contains text,
       you might want to keep the unhighlight refresh as "ui" instead, for crisper text.
@@ -545,6 +594,7 @@ function UIManager:setDirty(widget, refreshtype, refreshregion, refreshdither)
                 if self._window_stack[i].widget.dithered then
                     -- NOTE: That works when refreshtype is NOT a function,
                     --       which is why _repaint does another pass of this check ;).
+                    logger.dbg("setDirty on all widgets: found a dithered widget, infecting the refresh queue")
                     refreshdither = true
                 end
             end
@@ -559,6 +609,18 @@ function UIManager:setDirty(widget, refreshtype, refreshregion, refreshdither)
             -- Again, if it's flagged as dithered, honor that
             if widget.dithered then
                 refreshdither = true
+            end
+        end
+    else
+        -- Another special case: if we did NOT specify a widget, but requested a full refresh nonetheless (i.e., a diagonal swipe),
+        -- we'll want to check the window stack in order to honor dithering...
+        if refreshtype == "full" then
+            for i = 1, #self._window_stack do
+                -- If any of 'em were dithered, honor their dithering hint
+                if self._window_stack[i].widget.dithered then
+                    logger.dbg("setDirty full on no specific widget: found a dithered widget, infecting the refresh queue")
+                    refreshdither = true
+                end
             end
         end
     end
@@ -876,9 +938,9 @@ function UIManager:_refresh(mode, region, dither)
 
     -- NOTE: While, ideally, we shouldn't merge refreshes w/ different waveform modes,
     --       this allows us to optimize away a number of quirks of our rendering stack
-    --       (f.g., multiple setDirty calls queued when showing/closing a widget because of update mechanisms),
+    --       (e.g., multiple setDirty calls queued when showing/closing a widget because of update mechanisms),
     --       as well as a few actually effective merges
-    --       (f.g., the disappearance of a selection HL with the following menu update).
+    --       (e.g., the disappearance of a selection HL with the following menu update).
     for i = 1, #self._refresh_stack do
         -- check for collision with refreshes that are already enqueued
         if region:intersectWith(self._refresh_stack[i].region) then
@@ -1154,7 +1216,7 @@ end
 -- Executes all the operations of a suspending request. This function usually puts the device into
 -- suspension.
 function UIManager:suspend()
-    if Device:isCervantes() or Device:isKobo() or Device:isSDL() or Device:isSonyPRSTUX() then
+    if Device:isCervantes() or Device:isKobo() or Device:isSDL() or Device:isRemarkable() or Device:isSonyPRSTUX() then
         self.event_handlers["Suspend"]()
     elseif Device:isKindle() then
         Device.powerd:toggleSuspend()
@@ -1163,7 +1225,7 @@ end
 
 -- Executes all the operations of a resume request. This function usually wakes up the device.
 function UIManager:resume()
-    if Device:isCervantes() or Device:isKobo() or Device:isSDL() or Device:isSonyPRSTUX() then
+    if Device:isCervantes() or Device:isKobo() or Device:isSDL() or Device:isRemarkable() or Device:isSonyPRSTUX() then
         self.event_handlers["Resume"]()
     elseif Device:isKindle() then
         self.event_handlers["OutOfSS"]()

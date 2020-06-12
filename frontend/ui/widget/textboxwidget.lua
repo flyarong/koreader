@@ -38,11 +38,15 @@ local TextBoxWidget = InputContainer:new{
     alignment = "left", -- or "center", "right"
     dialog = nil, -- parent dialog that will be set dirty
     face = nil,
-    bold = nil,
+    bold = nil,   -- use bold=true to use a real bold font (or synthetized if not available),
+                  -- or bold=Font.FORCE_SYNTHETIZED_BOLD to force using synthetized bold,
+                  -- which, with XText, makes a bold string the same width as it non-bolded.
     line_height = 0.3, -- in em
     fgcolor = Blitbuffer.COLOR_BLACK,
     width = Screen:scaleBySize(400), -- in pixels
     height = nil, -- nil value indicates unscrollable text widget
+    height_adjust = false, -- if true, reduce height to a multiple of line_height (for nicer centering)
+    height_overflow_show_ellipsis = false, -- if height overflow, append ellipsis to last shown line
     top_line_num = nil, -- original virtual_line_num to scroll to
     charpos = nil, -- idx of char to draw the cursor on its left (can exceed #charlist by 1)
 
@@ -57,6 +61,7 @@ local TextBoxWidget = InputContainer:new{
     text_height = nil,    -- adjusted height to visible text (lines_per_page*line_height_px)
     cursor_line = nil, -- LineWidget to draw the vertical cursor.
     _bb = nil,
+    _face_adjusted = nil,
 
     -- We can provide a list of images: each image will be displayed on each
     -- scrolled page, in its top right corner (if more images than pages, remaining
@@ -77,14 +82,38 @@ local TextBoxWidget = InputContainer:new{
     --                  when bb or hi_bb is nil: its job is to load/build bb or hi_bb.
     --                  The page will refresh itself when load_bb_func returns.
     images = nil, -- list of such images
-    line_num_to_image = nil, -- will be filled by self:_splitCharWidthList()
+    line_num_to_image = nil, -- will be filled by self:_splitToLines()
     image_padding_left = Screen:scaleBySize(10),
     image_padding_bottom = Screen:scaleBySize(3),
     image_alt_face = Font:getFace("xx_smallinfofont"),
     image_alt_fgcolor = Blitbuffer.COLOR_BLACK,
+
+    -- Additional properties only used when using xtext
+    use_xtext = G_reader_settings:nilOrTrue("use_xtext"),
+    lang = nil, -- use this language (string) instead of the UI language
+    para_direction_rtl = nil, -- use true/false to override the default direction for the UI language
+    auto_para_direction = false, -- detect direction of each paragraph in text
+                                 -- (para_direction_rtl or UI language is then only
+                                 -- used as a weak hint about direction)
+    alignment_strict = false, -- true to force the alignemnt set by the alignment= attribute.
+                              -- When false, specified alignment is inverted when para direction is RTL
+    tabstop_nb_space_width = 8, -- unscaled_size_check: ignore
+                                -- width of tabstops, as a factor of the width of a space
+                                -- (set to 0 to disable any tab handling and display a tofu glyph)
+    _xtext = nil, -- for internal use
+    _alt_color_for_rtl = nil, -- (for debugging) draw LTR glyphs in black, RTL glyphs in gray
 }
 
 function TextBoxWidget:init()
+    if not self._face_adjusted then
+        self._face_adjusted = true -- only do that once
+        -- If self.bold, or if self.face is a real bold face, we may need to use
+        -- an alternative instance of self.face, with possibly the associated
+        -- real bold font, and/or with tweaks so fallback fonts are rendered bold
+        -- too, without affecting the regular self.face
+        self.face, self.bold = Font:getAdjustedFace(self.face, self.bold)
+    end
+
     self.line_height_px = Math.round( (1 + self.line_height) * self.face.size )
     self.cursor_line = LineWidget:new{
         dimen = Geom:new{
@@ -98,12 +127,18 @@ function TextBoxWidget:init()
         if self.height < self.line_height_px then
             self.height = self.line_height_px
         end
-        -- if no self.height, these will be set just after self:_splitCharWidthList()
+        -- if no self.height, these will be set just after self:_splitToLines()
         self.lines_per_page = math.floor(self.height / self.line_height_px)
         self.text_height = self.lines_per_page * self.line_height_px
     end
-    self:_evalCharWidthList()
-    self:_splitCharWidthList()
+
+    if self.use_xtext then
+        self:_measureWithXText()
+    else
+        self:_evalCharWidthList()
+    end
+    self:_splitToLines()
+
     if self.charpos and self.charpos > #self.charlist+1 then
         self.charpos = #self.charlist+1
     end
@@ -113,6 +148,15 @@ function TextBoxWidget:init()
         self.text_height = self.lines_per_page * self.line_height_px
         self.virtual_line_num = 1
     else
+        if self.height_overflow_show_ellipsis and #self.vertical_string_list > self.lines_per_page then
+            self.line_with_ellipsis = self.lines_per_page
+        end
+        if self.height_adjust then
+            self.height = self.text_height
+            if #self.vertical_string_list < self.lines_per_page then
+                self.height = #self.vertical_string_list * self.line_height_px
+            end
+        end
         -- Show the previous displayed area in case of re-init (focus/unfocus)
         -- InputText may have re-created us, while providing the previous charlist,
         -- charpos and top_line_num.
@@ -168,8 +212,36 @@ function TextBoxWidget:_evalCharWidthList()
     self.idx_pad = {}
 end
 
+function TextBoxWidget:_measureWithXText()
+    if not self._xtext_loaded then
+        require("libs/libkoreader-xtext")
+        TextBoxWidget._xtext_loaded = true
+    end
+    if type(self.charlist) == "table" then
+        self._xtext = xtext.new(self.charlist, self.face, self.auto_para_direction,
+                                                self.para_direction_rtl, self.lang)
+    else
+        if not self.text then
+            self.text = ""
+        elseif type(self.text) ~= "string" then
+            self.text = tostring(self.text)
+        end
+        self._xtext = xtext.new(self.text, self.face, self.auto_para_direction,
+                                                self.para_direction_rtl, self.lang)
+        self.charlist = self._xtext
+            -- Just to have many common bits of code using #self.charlist work
+            -- as expected (will crash if used as a real table with "table
+            -- expected, got userdata", so we know)
+    end
+    self._xtext:measure()
+    if self.tabstop_nb_space_width > 0 and not self._tabstop_width then
+        local space_width = RenderText:sizeUtf8Text(0, false, self.face, " ").x
+        self._tabstop_width = self.tabstop_nb_space_width * space_width
+    end
+end
+
 -- Split the text into logical lines to fit into the text box.
-function TextBoxWidget:_splitCharWidthList()
+function TextBoxWidget:_splitToLines()
     self.vertical_string_list = {}
 
     local idx = 1
@@ -180,7 +252,7 @@ function TextBoxWidget:_splitCharWidthList()
     local image_num = 0
     local targeted_width = self.width
     local image_lines_remaining = 0
-    while idx <= size do
+    while idx and idx <= size do
         -- Every scrolled page, we want to add the next (if any) image at its top right
         -- (if not scrollable, we will display only the first image)
         -- We need to make shorter lines and leave room for the image
@@ -218,6 +290,59 @@ function TextBoxWidget:_splitCharWidthList()
 
         -- end_offset will be the idx of char at end of line
         offset = idx -- idx of char at start of line
+
+        if self.use_xtext then
+            -- All of what's done below when use_xtext=false is done by the C++ module.
+            local line = self._xtext:makeLine(offset, targeted_width, false, self._tabstop_width)
+            -- logger.dbg("makeLine", ln, line)
+            -- We get a line such as this:
+            --    {
+            --        ["next_start_offset"] = 9272,
+            --        ["width"] = 511,
+            --        ["end_offset"] = 9270,
+            --        ["targeted_width"] = 548,
+            --        ["offset"] = 9208,
+            --        ["can_be_justified"] = true
+            --    },
+            -- Notes:
+            -- - next_start_offset is nil when reaching end of text
+            -- - On empty lines made from a standalone \n\n, we get end_offset = offset-1,
+            --   which is a bit strange but that's what the use_xtext=false does.
+            -- - Between a line end_offset= and the next line offset=, there may be only
+            --   a single indice not included: the \n or the space that allowed the break.
+            --
+            if line.next_start_offset and line.next_start_offset == line.offset then
+                -- No char could fit (too small targeted_width)
+                -- makeLine 6509 { ["offset"] = 1, ["end_offset"] = 0, ["next_start_offset"] = 1,
+                -- ["width"] = 0, ["targeted_width"] = 7, ["no_allowed_break_met"] = true, ["can_be_justified"] = true
+                -- Make one char on this line
+                line.next_start_offset = line.offset + 1
+                line.width = targeted_width
+            end
+            self.vertical_string_list[ln] = line
+            if line.no_allowed_break_met then
+                -- let the fact a long word was splitted be known
+                self.has_split_inside_word = true
+            end
+            if line.hard_newline_at_eot and not line.next_start_offset then
+                -- Add an empty line to reprensent the \n at end of text
+                -- and allow positionning cursor after it
+                self.vertical_string_list[ln+1] = {
+                    offset = size+1,
+                    end_offset = nil,
+                    width = 0,
+                    targeted_width = targeted_width,
+                }
+            end
+            ln = ln + 1
+            idx = line.next_start_offset -- nil when end of text reached
+            -- Skip the whole following non-use_xtext code, to continue
+            -- this 'while' loop (to avoid indentation diff on the
+            -- following code if we were using a 'else'...)
+            goto idx_continue
+        end
+
+        -- Only when not self.use_xtext:
 
         -- We append chars until the accumulated width exceeds `targeted_width`,
         -- or a newline occurs, or no more chars to consume.
@@ -333,6 +458,8 @@ function TextBoxWidget:_splitCharWidthList()
         end
         ln = ln + 1
         -- Make sure `idx` point to the next char to be processed in the next loop.
+
+        ::idx_continue:: -- (Label for goto when use_xtext=true)
     end
 end
 
@@ -348,6 +475,271 @@ function TextBoxWidget:_getLinePads(vertical_string)
         table.insert(pads, self.idx_pad[idx] or 0)
     end
     return pads
+end
+
+-- XText: shape a line into positionned glyphs
+function TextBoxWidget:_shapeLine(line)
+    -- line is an item from self.vertical_string_list
+    if line._shaped then
+        return -- already done
+    end
+    line._shaped = true
+    if not line.end_offset or line.end_offset < line.offset then
+        -- Empty line (first check above is for hard newline at end of file,
+        -- second check is for hard newline while not at end of file).
+        -- We need to set a direction on this line, so the cursor can be
+        -- positionned accordingly, on the left or on the right of the line
+        -- (for convenience, we have an empty line inherit the direction
+        -- of the previous line if non-empty)
+        local offset = line.offset
+        if not line.end_offset then -- last line with offset=#text+1
+            if offset > 1 then -- non empty text: get it from last char
+                offset = offset - 1
+            else
+                offset = nil -- no text: get _xtext specified or default direction
+            end
+        end
+        local para_dir_rtl, prev_char_para_dir_rtl = self._xtext:getParaDirection(offset)
+        line.para_is_rtl = para_dir_rtl or prev_char_para_dir_rtl
+        -- We also need to set x_start & x_end (similar to how we do it below)
+        local alignment = self.alignment
+        if not self.alignment_strict and line.para_is_rtl then
+            if alignment == "left" then
+                alignment = "right"
+            elseif alignment == "right" then
+                alignment = "left"
+            end
+        end
+        local pen_x = 0 -- when alignment == "left"
+        if alignment == "center" then
+            pen_x = line.targeted_width / 2
+        elseif alignment == "right" then
+            pen_x = line.targeted_width
+        end
+        line.x_start = pen_x
+        line.x_end = pen_x
+        return
+    end
+    -- Get glyphs, shaped and possibly substituted by Harfbuzz and re-ordered by FriBiDi.
+    -- We'll add to 'line' this table of glyphs, with some additional
+    -- computed x and advance keys
+    local xshaping = self._xtext:shapeLine(line.offset, line.end_offset,
+                                            line.idx_to_substitute_with_ellipsis)
+    -- logger.dbg(xshaping)
+    -- We get an array of tables looking like this:
+    --     [1] = {
+    --         ["y_offset"] = 0,
+    --         ["x_advance"] = 10,
+    --         ["can_extend"] = false,
+    --         ["can_extend_fallback"] = false,
+    --         ["is_rtl"] = false,
+    --         ["bidi_level"] = 0,
+    --         ["text_index"] = 1,
+    --         ["glyph"] = 68,
+    --         ["font_num"] = 0,
+    --         ["x_offset"] = 0,
+    --         ["is_cluster_start"] = true,
+    --         ["cluster_len"] = 1
+    --     },
+    --     [...]
+    --     [12] = {
+    --         ["y_offset"] = 0,
+    --         ["x_advance"] = 0,
+    --         ["can_extend"] = false,
+    --         ["can_extend_fallback"] = false,
+    --         ["is_rtl"] = true,
+    --         ["bidi_level"] = 1,
+    --         ["text_index"] = 8,
+    --         ["glyph"] = 1292,
+    --         ["font_num"] = 3,
+    --         ["x_offset"] = -2,
+    --         ["is_cluster_start"] = true,
+    --         ["cluster_len"] = 2
+    --     },
+    --     [13] = {
+    --         ["y_offset"] = 0,
+    --         ["x_advance"] = 10,
+    --         ["can_extend"] = false,
+    --         ["can_extend_fallback"] = false,
+    --         ["is_rtl"] = true,
+    --         ["bidi_level"] = 1,
+    --         ["text_index"] = 8,
+    --         ["glyph"] = 1321,
+    --         ["font_num"] = 3,
+    --         ["x_offset"] = 0,
+    --         ["is_cluster_start"] = false,
+    --         ["cluster_len"] = 2
+    --     },
+    -- With some additional keys about the line itself, that will help
+    -- with alignment and justification:
+    --     ["para_is_rtl"] = true,
+    --     ["nb_can_extend"] = 6,
+    --     ["nb_can_extend_fallback"] = 0,
+    --     ["width"] = 457
+
+    local alignment = self.alignment
+    if not self.alignment_strict and xshaping.para_is_rtl then
+        if alignment == "left" then
+            alignment = "right"
+        elseif alignment == "right" then
+            alignment = "left"
+        end
+    end
+
+    if xshaping.has_tabs and self.tabstop_nb_space_width > 0 then
+        -- Try to handle tabs: we got offset and end_offset to target the
+        -- expected width with tabstops applied on the logical order string.
+        -- We can really handle them correctly only with:
+        --   - pure LTR text and alignment=left
+        --   - pure RTL text and alignment=right
+        -- and with some possibly uneven spacing when text is justified.
+        -- Hopefully, we shouldn't use right or center with external text,
+        -- and our internal text is probably tab-free.
+        -- Note that tab is a Unicode SS (Segment Separator), so hopefully,
+        -- it seems to always get back the main direction of the paragraph
+        -- if text is Bidi - so our tabstops always fly in the main
+        -- paragraph direction.
+        -- When we can't do well, we let the tab char have its tofu glyph
+        -- width (which seems to be around the width of 4 spaces with our
+        -- fonts), and we just avoid displaying the glyph. So, there will
+        -- be enough spacing, but no tabstop alignment.
+        if alignment == "left" and not xshaping.para_is_rtl then
+            local last_tab = 0
+            local pen_x = 0
+            for i=1, #xshaping, 1 do
+                local xglyph = xshaping[i]
+                if xglyph.is_tab then
+                    last_tab = i
+                    local nb_tabstops_passed_by = math.floor(pen_x / self._tabstop_width)
+                    local new_pen_x = (nb_tabstops_passed_by + 1) * self._tabstop_width
+                    local this_tab_width = new_pen_x - pen_x
+                    xshaping.width = xshaping.width - xglyph.x_advance + this_tab_width
+                    xglyph.x_advance = this_tab_width
+                end
+                pen_x = pen_x + xglyph.x_advance
+            end
+            if last_tab > 0 and self.justified and line.can_be_justified then
+                -- Remove all can_extend before (on the left of) last tab
+                -- so justification does not affect tabstops
+                for i=1, last_tab, 1 do
+                    local xglyph = xshaping[i]
+                    if xglyph.can_extend then
+                        xglyph.can_extend = false
+                        xshaping.nb_can_extend = xshaping.nb_can_extend - 1
+                    end
+                    if xglyph.can_extend_fallback then
+                        xglyph.can_extend_fallback = false
+                        xshaping.nb_can_extend_fallback = xshaping.nb_can_extend_fallback - 1
+                    end
+                end
+            end
+        elseif alignment == "right" and xshaping.para_is_rtl then
+            -- Similar, but scanning and using a pen_x from the right
+            local last_tab = 0
+            local pen_x = 0
+            for i=#xshaping, 1, -1 do
+                local xglyph = xshaping[i]
+                if xglyph.is_tab then
+                    last_tab = i
+                    local nb_tabstops_passed_by = math.floor(pen_x / self._tabstop_width)
+                    local new_pen_x = (nb_tabstops_passed_by + 1) * self._tabstop_width
+                    local this_tab_width = new_pen_x - pen_x
+                    xshaping.width = xshaping.width - xglyph.x_advance + this_tab_width
+                    xglyph.x_advance = this_tab_width
+                end
+                pen_x = pen_x + xglyph.x_advance
+            end
+            if last_tab > 0 and self.justified and line.can_be_justified then
+                -- Remove all can_extend before (on the right of) last tab
+                -- so justification does not affect tabstops
+                for i=#xshaping, last_tab, -1 do
+                    local xglyph = xshaping[i]
+                    if xglyph.can_extend then
+                        xglyph.can_extend = false
+                        xshaping.nb_can_extend = xshaping.nb_can_extend - 1
+                    end
+                    if xglyph.can_extend_fallback then
+                        xglyph.can_extend_fallback = false
+                        xshaping.nb_can_extend_fallback = xshaping.nb_can_extend_fallback - 1
+                    end
+                end
+            end
+        end
+    end
+
+    local pen_x = 0 -- when alignment == "left"
+    if alignment == "center" then
+        pen_x = (line.targeted_width - line.width)/2 or 0
+    elseif alignment == "right" then
+        pen_x = (line.targeted_width - line.width)
+    end
+
+    local space_add_w = 0
+    local space_add1_nb = 0
+    local use_can_extend_fallback = false
+    if self.justified and line.can_be_justified then
+        local space_to_fill = line.targeted_width - xshaping.width
+        if xshaping.nb_can_extend > 0 then
+            space_add_w = math.floor(space_to_fill / xshaping.nb_can_extend)
+            -- nb of spaces to which we'll add 1 more pixel
+            space_add1_nb = space_to_fill - space_add_w * xshaping.nb_can_extend
+            line.justified = true
+            line.width = line.targeted_width
+            pen_x = 0 -- reset alignment
+        elseif xshaping.nb_can_extend_fallback > 0 then
+            use_can_extend_fallback = true
+            space_add_w = math.floor(space_to_fill / xshaping.nb_can_extend_fallback)
+            -- nb of spaces to which we'll add 1 more pixel
+            space_add1_nb = space_to_fill - space_add_w * xshaping.nb_can_extend_fallback
+            line.justified = true
+            line.width = line.targeted_width
+            pen_x = 0 -- reset alignment
+        end
+    end
+
+    line.x_start = pen_x
+    local prev_cluster_start_xglyph
+    for i, xglyph in ipairs(xshaping) do
+        xglyph.x0 = pen_x
+        pen_x = pen_x + xglyph.x_advance -- advance from Harfbuzz
+        if xglyph.can_extend or (use_can_extend_fallback and xglyph.can_extend_fallback) then
+            -- add some pixels for justification
+            pen_x = pen_x + space_add_w
+            if space_add1_nb > 0 then
+                pen_x = pen_x + 1
+                space_add1_nb = space_add1_nb - 1
+            end
+        end
+        -- These will be used by _getXYForCharPos() and getCharPosAtXY():
+        xglyph.x1 = pen_x
+        xglyph.w = xglyph.x1 - xglyph.x0
+        -- Because of glyph substitution and merging (one to many, many to one, many to many,
+        -- with advance or zero-advance...), glyphs may not always be fine to position
+        -- the cursor caret. For X/Y/Charpos positionning/guessing, we'll ignore
+        -- glyphs that are not cluster_start, and we build here the full cluster x0/x1/w
+        -- by merging them from all glyphs part of this cluster
+        if xglyph.is_cluster_start then
+            prev_cluster_start_xglyph = xglyph
+        else
+            if xglyph.x1 > prev_cluster_start_xglyph.x1 then
+                prev_cluster_start_xglyph.x1 = xglyph.x1
+                prev_cluster_start_xglyph.w = prev_cluster_start_xglyph.x1 - prev_cluster_start_xglyph.x0
+            end
+            -- We don't update/decrease prev_cluster_start_xglyph.x0, even if one of its glyph
+            -- has a backward advance that go back the 1st glyph x0, to not mess positionning.
+        end
+        if xglyph.is_tab then
+            xglyph.no_drawing = true
+            -- Note that xglyph.glyph=0 when no glyph was found in any font,
+            -- if we ever want to not draw them
+        end
+    end
+    line.x_end = pen_x
+    line.xglyphs = xshaping
+    -- (Copy para_is_rtl up into 'line', where empty lines without xglyphs have it)
+    line.para_is_rtl = line.xglyphs.para_is_rtl
+    --- @todo Should we drop these when no more displayed in the page to reclaim memory,
+    -- at the expense of recomputing it when back to this page?
 end
 
 ---- Lays out text.
@@ -367,6 +759,54 @@ function TextBoxWidget:_renderText(start_row_idx, end_row_idx)
     self._bb = Blitbuffer.new(self.width, h, bbtype)
     self._bb:fill(Blitbuffer.COLOR_WHITE)
     local y = font_height
+
+    if self.use_xtext then
+        for i = start_row_idx, end_row_idx do
+            local line = self.vertical_string_list[i]
+            if self.line_with_ellipsis and i == self.line_with_ellipsis and not line.ellipsis_added then
+                -- Requested to add an ellipsis on this line
+                local ellipsis_width = RenderText:getEllipsisWidth(self.face)
+                    -- no bold: xtext does synthetized bold with normal metrics
+                line.width = line.width + ellipsis_width
+                if line.width > line.targeted_width then
+                    -- The ellipsis would overflow: we need to re-makeLine()
+                    -- this line with a smaller targeted_width
+                    line = self._xtext:makeLine(line.offset, line.targeted_width - ellipsis_width, false, self._tabstop_width)
+                    self.vertical_string_list[i] = line -- replace the former one
+                end
+                if line.end_offset and line.end_offset < #self._xtext then
+                    -- We'll have shapeLine add the ellipsis to the returned glyphs
+                    line.end_offset = line.end_offset + 1
+                    line.idx_to_substitute_with_ellipsis = line.end_offset
+                end
+                line.ellipsis_added = true -- No need to redo it next time
+            end
+            self:_shapeLine(line)
+            if line.xglyphs then -- non-empty line
+                for __, xglyph in ipairs(line.xglyphs) do
+                    if not xglyph.no_drawing then
+                        local face = self.face.getFallbackFont(xglyph.font_num) -- callback (not a method)
+                        local glyph = RenderText:getGlyphByIndex(face, xglyph.glyph, self.bold)
+                        local color = self.fgcolor
+                        if self._alt_color_for_rtl then
+                            color = xglyph.is_rtl and Blitbuffer.COLOR_DARK_GRAY or Blitbuffer.COLOR_BLACK
+                        end
+                        self._bb:colorblitFrom(glyph.bb,
+                                    xglyph.x0 + glyph.l + xglyph.x_offset,
+                                    y - glyph.t - xglyph.y_offset,
+                                    0, 0, glyph.bb:getWidth(), glyph.bb:getHeight(), color)
+                    end
+                end
+            end
+            y = y + self.line_height_px
+        end
+        -- Render image if any
+        self:_renderImage(start_row_idx)
+        return
+    end
+
+    -- Only when not self.use_xtext:
+
     for i = start_row_idx, end_row_idx do
         local line = self.vertical_string_list[i]
         local pen_x = 0 -- when alignment == "left"
@@ -375,9 +815,21 @@ function TextBoxWidget:_renderText(start_row_idx, end_row_idx)
         elseif self.alignment == "right" then
             pen_x = (self.width - line.width)
         end
-            --- @todo don't use kerning for monospaced fonts.    (houqp)
-            --- refer to [cb25029dddc42693cc7aaefbe47e9bd3b7e1a750](https://github.com/koreader/koreader/commit/cb25029dddc42693cc7aaefbe47e9bd3b7e1a750) in master tree
-        RenderText:renderUtf8Text(self._bb, pen_x, y, self.face, self:_getLineText(line), true, self.bold, self.fgcolor, nil, self:_getLinePads(line))
+        -- Note: we use kerning=true in all RenderText calls
+        -- (But kerning should probably not be used with monospaced fonts.)
+        local line_text = self:_getLineText(line)
+        if self.line_with_ellipsis and i == self.line_with_ellipsis then
+            -- Requested to add an ellipsis on this line
+            local ellipsis_width = RenderText:getEllipsisWidth(self.face, self.bold)
+            if line.width + ellipsis_width > self.width then
+                -- We could try to find the last break point (space, CJK) to
+                -- truncate there and add the ellipsis, but well...
+                line_text = RenderText:truncateTextByWidth(line_text, self.face, self.width, true, self.bold)
+            else
+                line_text = line_text .. "…"
+            end
+        end
+        RenderText:renderUtf8Text(self._bb, pen_x, y, self.face, line_text, true, self.bold, self.fgcolor, nil, self:_getLinePads(line))
         y = y + self.line_height_px
     end
 
@@ -562,6 +1014,25 @@ function TextBoxWidget:getVisibleHeightRatios()
     return low, high
 end
 
+-- Helper function to be used before intanstiating a TextBoxWidget instance
+function TextBoxWidget:getFontSizeToFitHeight(height_px, nb_lines, line_height_em)
+    -- Get a font size that would fit nb_lines in height_px.
+    -- A font with the returned size should then be provided
+    -- to TextBoxWidget:new() (as well as the line_height_em given
+    -- here, as the line_height= property, if not the default).
+    if not nb_lines then
+        nb_lines = 1 -- default to 1 line
+    end
+    if not line_height_em then
+        line_height_em = self.line_height -- (TextBoxWidget default above: 0.3)
+    end
+    -- We do the revert of what's done in :init():
+    --   self.line_height_px = Math.round( (1 + self.line_height) * self.face.size )
+    local font_size = height_px / nb_lines / (1 + line_height_em)
+    font_size = font_size * 1000000 / Screen:scaleBySize(1000000) -- invert scaleBySize
+    return math.floor(font_size)
+end
+
 function TextBoxWidget:getCharPos()
     -- returns virtual_line_num too
     return self.charpos, self.virtual_line_num
@@ -580,16 +1051,23 @@ function TextBoxWidget:paintTo(bb, x, y)
     bb:blitFrom(self._bb, x, y, 0, 0, self.width, self._bb:getHeight())
 end
 
-function TextBoxWidget:free()
-    logger.dbg("TextBoxWidget:free called")
-    -- :free() is called when our parent widget is closing, and
-    -- here whenever :_renderText() is being called, to display
-    -- a new page: cancel any scheduled image update, as it
-    -- is no longer related to current page
+function TextBoxWidget:onCloseWidget()
+    -- Free all resources when UIManager closes this widget
+    self:free()
+end
+
+function TextBoxWidget:free(full)
+    -- logger.dbg("TextBoxWidget:free called")
+    -- We are called with full=false from other methods here whenever
+    -- :_renderText() is to be called to render a new page (when scrolling
+    -- inside this text, or moving the view).
+    -- Free the between-renderings freeable resources
     if self.image_update_action then
+        -- Cancel any scheduled image update, as it is no longer related to current page
         logger.dbg("TextBoxWidget:free: cancelling self.image_update_action")
         UIManager:unschedule(self.image_update_action)
     end
+    -- Free blitbuffers
     if self._bb then
         self._bb:free()
         self._bb = nil
@@ -598,10 +1076,18 @@ function TextBoxWidget:free()
         self.cursor_restore_bb:free()
         self.cursor_restore_bb = nil
     end
+    if full ~= false then -- final free(): free all remaining resources
+        if self.use_xtext and self._xtext then
+            -- Allow not waiting until Lua gc() to cleanup C XText malloc'ed stuff
+            -- (we should not free it if full=false as it is re-usable across renderings)
+            self._xtext:free()
+            -- logger.dbg("TextBoxWidget:_xtext:free()")
+        end
+    end
 end
 
 function TextBoxWidget:update(scheduled_update)
-    self:free()
+    self:free(false)
     -- We set this flag so :_renderText() can know we were called from a
     -- scheduled update and so not schedule another one
     self.scheduled_update = scheduled_update
@@ -643,7 +1129,7 @@ end
 function TextBoxWidget:scrollDown()
     self.image_show_alt_text = nil -- reset image bb/alt state
     if self.virtual_line_num + self.lines_per_page <= #self.vertical_string_list then
-        self:free()
+        self:free(false)
         self.virtual_line_num = self.virtual_line_num + self.lines_per_page
         -- If last line shown, set it to be the last line of view
         -- (only if editable, as this would be confusing when reading
@@ -668,7 +1154,7 @@ end
 function TextBoxWidget:scrollUp()
     self.image_show_alt_text = nil
     if self.virtual_line_num > 1 then
-        self:free()
+        self:free(false)
         if self.virtual_line_num <= self.lines_per_page then
             self.virtual_line_num = 1
         else
@@ -697,7 +1183,7 @@ function TextBoxWidget:scrollLines(nb_lines)
         new_line_num = #self.vertical_string_list - self.lines_per_page + 1
     end
     self.virtual_line_num = new_line_num
-    self:free()
+    self:free(false)
     self:_renderText(self.virtual_line_num, self.virtual_line_num + self.lines_per_page - 1)
     if self.editable then
         local x, y = self:_getXYForCharPos() -- luacheck: no unused
@@ -712,7 +1198,7 @@ end
 function TextBoxWidget:scrollToTop()
     self.image_show_alt_text = nil
     if self.virtual_line_num > 1 then
-        self:free()
+        self:free(false)
         self.virtual_line_num = 1
         self:_renderText(self.virtual_line_num, self.virtual_line_num + self.lines_per_page - 1)
     end
@@ -730,7 +1216,7 @@ function TextBoxWidget:scrollToBottom()
         ln = 1
     end
     if self.virtual_line_num ~= ln then
-        self:free()
+        self:free(false)
         self.virtual_line_num = ln
         self:_renderText(self.virtual_line_num, self.virtual_line_num + self.lines_per_page - 1)
     end
@@ -748,7 +1234,7 @@ function TextBoxWidget:scrollToRatio(ratio)
     local page_num = 1 + Math.round((page_count - 1) * ratio)
     local line_num = 1 + (page_num - 1) * self.lines_per_page
     if line_num ~= self.virtual_line_num then
-        self:free()
+        self:free(false)
         self.virtual_line_num = line_num
         self:_renderText(self.virtual_line_num, self.virtual_line_num + self.lines_per_page - 1)
     end
@@ -790,7 +1276,63 @@ function TextBoxWidget:_getXYForCharPos(charpos)
         end
     end
     local y = (ln - self.virtual_line_num) * self.line_height_px
+
     -- Find the x offset in the current line.
+
+    if self.use_xtext then
+        local line = self.vertical_string_list[ln]
+        self:_shapeLine(line)
+        local x = line.x_start -- used if empty line (line.x_start = line.x_end)
+        if line.xglyphs then -- non-empty line
+            -- If charpos is the end of the logical order line, it may not be at end of
+            -- visual line (it might be at start, or even in the middle, with bidi!)
+            local is_after_last_char = charpos > line.end_offset
+            if is_after_last_char then
+                -- Find the last char that is really part of this line
+                charpos = line.end_offset
+            end
+            for i, xglyph in ipairs(line.xglyphs) do
+                if xglyph.is_cluster_start then -- ignore non-start cluster glyphs
+                    if charpos >= xglyph.text_index and charpos < xglyph.text_index + xglyph.cluster_len then
+                        -- Correct glyph found
+                        if is_after_last_char then
+                            -- Draw on the right of this glyph if LTR, on the left if RTL
+                            if xglyph.is_rtl then
+                                x = xglyph.x0
+                            else
+                                x = xglyph.x1
+                            end
+                            break
+                        end
+                        --- @todo Be more clever with RTL, and at bidi boundaries,
+                        -- may be depending on line.para_is_rtl and xglyph.bidi_level
+                        if xglyph.is_rtl then
+                            x = xglyph.x1 -- draw cursor on the right of this RTL glyph
+                        else
+                            x = xglyph.x0
+                        end
+                        if xglyph.cluster_len > 1 then
+                            -- Adjust x so we move the cursor along this single glyph width
+                            -- depending on charpos position inside this cluster
+                            local dx = math.floor(xglyph.w * (charpos - xglyph.text_index) / xglyph.cluster_len)
+                            if xglyph.is_rtl then
+                                x = x - dx
+                            else
+                                x = x + dx
+                            end
+                        end
+                        break
+                    end
+                    x = xglyph.x1
+                end
+            end
+        end
+        -- logger.dbg("_getXYForCharPos(", charpos, "):", x, y)
+        return x, y
+    end
+
+    -- Only when not self.use_xtext:
+
     local x = 0
     local offset = self.vertical_string_list[ln].offset
     local nbchars = #self.charlist
@@ -820,17 +1362,66 @@ function TextBoxWidget:getCharPosAtXY(x, y)
     elseif ln > #self.vertical_string_list then
         return #self.charlist + 1 -- return end of last line
     end
-    if x > self.vertical_string_list[ln].width then -- no need to loop thru chars
-        local pos = self.vertical_string_list[ln].end_offset
-        if not pos then -- empty line
-            pos = self.vertical_string_list[ln].offset
-        end
-        return pos + 1 -- after last char
-    end
     local idx = self.vertical_string_list[ln].offset
     local end_offset = self.vertical_string_list[ln].end_offset
     if not end_offset then -- empty line
         return idx
+    end
+
+    if self.use_xtext then
+        local line = self.vertical_string_list[ln]
+        self:_shapeLine(line)
+        -- If before start of line or after end of line, no need to loop thru chars
+        -- (we return line.end_offset+1 to be after last char)
+        if x <= line.x_start then
+            if line.para_is_rtl then
+                return line.end_offset and line.end_offset + 1 or line.offset
+            else
+                return line.offset
+            end
+        elseif x > line.x_end then
+            if line.para_is_rtl then
+                return line.offset
+            else
+                return line.end_offset and line.end_offset + 1 or line.offset
+            end
+        end
+        if line.xglyphs then -- non-empty line
+            for i, xglyph in ipairs(line.xglyphs) do
+                if xglyph.is_cluster_start then -- ignore non-start cluster glyphs
+                    if x < xglyph.x1 then
+                        if xglyph.cluster_len <= 1 then
+                            return xglyph.text_index
+                        else
+                            -- Find the most adequate charpos among those in the
+                            -- cluster by splitting its width into equal parts
+                            -- for each original char.
+                            local dw = xglyph.w / xglyph.cluster_len
+                            for n=1, xglyph.cluster_len do
+                                if x < xglyph.x0 + n*dw then
+                                    if xglyph.is_rtl then
+                                        return xglyph.text_index + xglyph.cluster_len - n
+                                    else
+                                        return xglyph.text_index + n - 1
+                                    end
+                                end
+                            end
+                        end
+                    end
+                end
+            end
+        end
+        return end_offset + 1 -- should not happen
+    end
+
+    -- Only when not self.use_xtext:
+
+    if x > self.vertical_string_list[ln].width then -- no need to loop thru chars
+        local pos = self.vertical_string_list[ln].end_offset
+        if not pos then -- empty last line
+            return self.vertical_string_list[ln].offset
+        end
+        return pos + 1 -- after last char
     end
     local w = 0
     local w_prev
@@ -884,12 +1475,18 @@ function TextBoxWidget:moveCursorToCharPos(charpos)
         -- needs to deal with possible overflow ?
         y = y - scroll_lines * self.line_height_px
     end
+    -- We can also get x ouside current view, when a line takes the full width
+    -- (which happens when text is justified): move the cursor a bit to the left
+    -- (it will be drawn over the right of the last glyph, which should be ok.)
+    if x > self.width - self.cursor_line.dimen.w then
+        x = self.width - self.cursor_line.dimen.w
+    end
     if not self._bb then
         return -- no bb yet to render the cursor too
     end
     if self.virtual_line_num ~= self.prev_virtual_line_num then
         -- We scrolled the view: full render and refresh needed
-        self:free()
+        self:free(false)
         self:_renderText(self.virtual_line_num, self.virtual_line_num + self.lines_per_page - 1)
         -- Store the original image of where we will draw the cursor, for a
         -- quick restore and two small refreshes when moving only the cursor
@@ -1241,6 +1838,44 @@ function TextBoxWidget:onHoldReleaseText(callback, ges)
     self.hold_start_x = nil
     self.hold_start_y = nil
     self.hold_start_tv = nil
+
+    if self.use_xtext then
+        -- With xtext and fribidi, words may not be laid out in logical order,
+        -- so the left of a visual word may be its end in logical order,
+        -- and the right its start.
+        -- So, just find out charpos (text indice) of both points and
+        -- find word edges in the logical order text/charlist.
+        local sel_start_idx = self:getCharPosAtXY(x0, y0)
+        local sel_end_idx = self:getCharPosAtXY(x1, y1)
+        if not sel_start_idx or not sel_end_idx then
+            -- one or both hold points were out of text
+            return true
+        end
+        if sel_start_idx > sel_end_idx then -- re-order if needed
+            sel_start_idx, sel_end_idx = sel_end_idx, sel_start_idx
+        end
+        -- We get cursor positions, which can be after last char,
+        -- and that we need to correct. But if both positions are
+        -- after last char, the full selection is out of text.
+        if sel_start_idx > #self._xtext then -- Both are after last char
+            return true
+        end
+        if sel_end_idx > #self._xtext then -- Only end is after last char
+            sel_end_idx = #self._xtext
+        end
+        -- Delegate word boundaries search to xtext.cpp, which can
+        -- use libunibreak's wordbreak features.
+        -- (50 is the nb of chars backward and ahead of selection indices
+        -- to consider when looking for word boundaries)
+        local selected_text = self._xtext:getSelectedWords(sel_start_idx, sel_end_idx, 50)
+
+        logger.dbg("onHoldReleaseText (duration:", hold_duration, ") :",
+                        sel_start_idx, ">", sel_end_idx, "=", selected_text)
+        callback(selected_text, hold_duration)
+        return true
+    end
+
+    -- Only when not self.use_xtext:
 
     -- similar code to find start or end is in _findWordEdge() helper
     local sel_start_idx = self:_findWordEdge(x0, y0, FIND_START)
