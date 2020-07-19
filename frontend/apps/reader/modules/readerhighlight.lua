@@ -323,7 +323,9 @@ function ReaderHighlight:updateHighlight(page, index, side, direction, move_by_c
     local new_beginning = self.view.highlight.saved[page][index].pos0
     local new_end = self.view.highlight.saved[page][index].pos1
     local new_text = self.ui.document:getTextFromXPointers(new_beginning, new_end)
+    local new_chapter = self.ui.toc:getTocTitleByPage(new_beginning)
     self.view.highlight.saved[page][index].text = new_text
+    self.view.highlight.saved[page][index].chapter = new_chapter
     local new_highlight = self.view.highlight.saved[page][index]
     self.ui.bookmark:updateBookmark({
         page = highlight_beginning,
@@ -707,7 +709,7 @@ function ReaderHighlight:onHoldPan(_, ges)
                 -- Also, we are not able to move hold_pos.x out of screen,
                 -- so if we started on the right page, ignore top left corner,
                 -- and if we started on the left page, ignore bottom right corner.
-                local screen_half_width = math.floor(Screen:getWidth() * 1/2)
+                local screen_half_width = math.floor(Screen:getWidth() * 0.5)
                 if self.hold_pos.x >= screen_half_width and is_in_prev_page_corner then
                     return true
                 elseif self.hold_pos.x <= screen_half_width and is_in_next_page_corner then
@@ -1123,6 +1125,7 @@ function ReaderHighlight:getHighlightBookmarkItem()
         local datetime = os.date("%Y-%m-%d %H:%M:%S")
         local page = self.ui.document.info.has_pages and
                 self.hold_pos.page or self.selected_text.pos0
+        local chapter_name = self.ui.toc:getTocTitleByPage(page)
         return {
             page = page,
             pos0 = self.selected_text.pos0,
@@ -1130,6 +1133,7 @@ function ReaderHighlight:getHighlightBookmarkItem()
             datetime = datetime,
             notes = self.selected_text.text,
             highlighted = true,
+            chapter = chapter_name,
         }
     end
 end
@@ -1144,6 +1148,9 @@ function ReaderHighlight:saveHighlight()
             self.view.highlight.saved[page] = {}
         end
         local datetime = os.date("%Y-%m-%d %H:%M:%S")
+        local pg_or_xp = self.ui.document.info.has_pages and
+                self.hold_pos.page or self.selected_text.pos0
+        local chapter_name = self.ui.toc:getTocTitleByPage(pg_or_xp)
         local hl_item = {
             datetime = datetime,
             text = self.selected_text.text,
@@ -1151,6 +1158,7 @@ function ReaderHighlight:saveHighlight()
             pos1 = self.selected_text.pos1,
             pboxes = self.selected_text.pboxes,
             drawer = self.view.highlight.saved_drawer,
+            chapter = chapter_name
         }
         table.insert(self.view.highlight.saved[page], hl_item)
         local bookmark_item = self:getHighlightBookmarkItem()

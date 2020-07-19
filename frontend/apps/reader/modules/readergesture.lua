@@ -9,7 +9,6 @@ local InfoMessage = require("ui/widget/infomessage")
 local InputContainer = require("ui/widget/container/inputcontainer")
 local InputDialog = require("ui/widget/inputdialog")
 local LuaData = require("luadata")
-local Notification = require("ui/widget/notification")
 local Screen = require("device").screen
 local UIManager = require("ui/uimanager")
 local T = require("ffi/util").template
@@ -108,6 +107,9 @@ local action_strings = {
     wallabag_download = _("Wallabag retrieval"),
     kosync_push_progress = _("Push progress from this device"),
     kosync_pull_progress = _("Pull progress from other devices"),
+    calibre_search = _("Search in calibre metadata"),
+    calibre_browse_tags = _("Browse all calibre tags"),
+    calibre_browse_series = _("Browse all calibre series"),
 }
 
 local custom_multiswipes_path = DataStorage:getSettingsDir().."/multiswipes.lua"
@@ -188,6 +190,12 @@ function ReaderGesture:init()
         one_finger_swipe_top_edge_left = "ignore",
         one_finger_swipe_bottom_edge_right = "ignore",
         one_finger_swipe_bottom_edge_left = "ignore",
+        double_tap_left_side = self.ges_mode == "gesture_reader" and "page_jmp_back_10",
+        double_tap_right_side = self.ges_mode == "gesture_reader" and "page_jmp_fwd_10",
+        double_tap_top_left_corner = "ignore",
+        double_tap_top_right_corner = "ignore",
+        double_tap_bottom_left_corner = "ignore",
+        double_tap_bottom_right_corner = "ignore",
         two_finger_tap_top_left_corner = "ignore",
         two_finger_tap_top_right_corner = "ignore",
         two_finger_tap_bottom_left_corner = "ignore",
@@ -240,6 +248,8 @@ function ReaderGesture:init()
     local mirrored_if_rtl = {
         tap_top_left_corner = "tap_top_right_corner",
         tap_right_bottom_corner = "tap_left_bottom_corner",
+        double_tap_left_side = "double_tap_right_side",
+        double_tap_right_side = "double_tap_left_side",
     }
     local is_rtl = BD.mirroredUILayout()
     if is_rtl then
@@ -348,6 +358,39 @@ function ReaderGesture:addToMainMenu(menu_items)
                 sub_item_table = self:buildMenu("hold_bottom_right_corner", self.default_gesture["hold_bottom_right_corner"]),
             },
         },
+    }
+    local double_tap_submenu = {
+        text = _("Double tap"),
+        enabled_func = function()
+            return self.ges_mode == "gesture_reader" and self.ui.disable_double_tap ~= true
+        end,
+        sub_item_table = {
+            {
+                text_func = function() return actionTextFunc("double_tap_left_side", _("Left side")) end,
+                sub_item_table = self:buildMenu("double_tap_left_side", self.default_gesture["double_tap_left_side"]),
+            },
+            {
+                text_func = function() return actionTextFunc("double_tap_right_side", _("Right side")) end,
+                sub_item_table = self:buildMenu("double_tap_right_side", self.default_gesture["double_tap_right_side"]),
+            },
+            {
+                text_func = function() return actionTextFunc("double_tap_top_left_corner", _("Top left")) end,
+                sub_item_table = self:buildMenu("double_tap_top_left_corner", self.default_gesture["double_tap_top_left_corner"]),
+            },
+            {
+                text_func = function() return actionTextFunc("double_tap_top_right_corner", _("Top right")) end,
+                sub_item_table = self:buildMenu("double_tap_top_right_corner", self.default_gesture["double_tap_top_right_corner"]),
+            },
+            {
+                text_func = function() return actionTextFunc("double_tap_bottom_left_corner", _("Bottom left")) end,
+                sub_item_table = self:buildMenu("double_tap_bottom_left_corner", self.default_gesture["double_tap_bottom_left_corner"]),
+            },
+            {
+                text_func = function() return actionTextFunc("double_tap_right_bottom_corner", _("Bottom right")) end,
+                sub_item_table = self:buildMenu("double_tap_bottom_right_corner", self.default_gesture["double_tap_bottom_right_corner"]),
+                separator = true,
+            },
+        }
     }
     menu_items.gesture_manager = {
         text = _("Gesture manager"),
@@ -474,6 +517,7 @@ function ReaderGesture:addToMainMenu(menu_items)
                     },
                 },
             },
+            double_tap_submenu,
         },
     }
     menu_items.gesture_intervals = {
@@ -489,7 +533,7 @@ function ReaderGesture:addToMainMenu(menu_items)
 Set double tap interval in milliseconds.
 The interval value can range from 100 (0.1 seconds) to 2000 (2 seconds).
 Default value: %1]]), GestureDetector.DOUBLE_TAP_INTERVAL/1000),
-                        width = Screen:getWidth() * 0.6,
+                        width = math.floor(Screen:getWidth() * 0.6),
                         value = GestureDetector:getInterval("ges_double_tap_interval")/1000,
                         value_min = 100,
                         value_max = 2000,
@@ -516,7 +560,7 @@ Default value: %1]]), GestureDetector.DOUBLE_TAP_INTERVAL/1000),
 Set two finger tap duration in milliseconds.
 The duration value can range from 100 (0.1 seconds) to 2000 (2 seconds).
 Default value: %1]]), GestureDetector.TWO_FINGER_TAP_DURATION/1000),
-                        width = Screen:getWidth() * 0.6,
+                        width = math.floor(Screen:getWidth() * 0.6),
                         value = GestureDetector:getInterval("ges_two_finger_tap_duration")/1000,
                         value_min = 100,
                         value_max = 2000,
@@ -543,7 +587,7 @@ Default value: %1]]), GestureDetector.TWO_FINGER_TAP_DURATION/1000),
 Set hold interval in milliseconds.
 The interval value can range from 100 (0.1 seconds) to 2000 (2 seconds).
 Default value: %1]]), GestureDetector.HOLD_INTERVAL/1000),
-                        width = Screen:getWidth() * 0.6,
+                        width = math.floor(Screen:getWidth() * 0.6),
                         value = GestureDetector:getInterval("ges_hold_interval")/1000,
                         value_min = 100,
                         value_max = 2000,
@@ -570,7 +614,7 @@ Default value: %1]]), GestureDetector.HOLD_INTERVAL/1000),
 Set pan delay interval in milliseconds.
 The interval value can range from 100 (0.1 seconds) to 2000 (2 seconds).
 Default value: %1]]), GestureDetector.PAN_DELAYED_INTERVAL/1000),
-                        width = Screen:getWidth() * 0.6,
+                        width = math.floor(Screen:getWidth() * 0.6),
                         value = GestureDetector:getInterval("ges_pan_delayed_interval")/1000,
                         value_min = 100,
                         value_max = 2000,
@@ -597,7 +641,7 @@ Default value: %1]]), GestureDetector.PAN_DELAYED_INTERVAL/1000),
 Set swipe interval in milliseconds.
 The interval value can range from 100 (0.1 seconds) to 2000 (2 seconds).
 Default value: %1]]), GestureDetector.SWIPE_INTERVAL/1000),
-                        width = Screen:getWidth() * 0.6,
+                        width = math.floor(Screen:getWidth() * 0.6),
                         value = GestureDetector:getInterval("ges_swipe_interval")/1000,
                         value_min = 100,
                         value_max = 2000,
@@ -728,7 +772,7 @@ function ReaderGesture:buildMenu(ges, default)
 
         {"toc", not self.is_docless},
         {"bookmarks", not self.is_docless},
-        {"reading_progress", ReaderGesture.getReaderProgress ~= nil},
+        {"reading_progress", not self.is_docless},
         {"book_statistics", not self.is_docless},
 
         {"book_status", not self.is_docless},
@@ -766,7 +810,7 @@ function ReaderGesture:buildMenu(ges, default)
 
         {"toggle_hold_corners", true},
         {"toggle_gsensor", Device:canToggleGSensor()},
-        {"toggle_rotation", not self.is_docless, true},
+        {"toggle_rotation", true, true},
 
         {"wifi_on", Device:hasWifiToggle()},
         {"wifi_off", Device:hasWifiToggle()},
@@ -792,6 +836,10 @@ function ReaderGesture:buildMenu(ges, default)
 
         {"kosync_push_progress", not self.is_docless},
         {"kosync_pull_progress", not self.is_docless},
+
+        {"calibre_search", true},
+        {"calibre_browse_tags", true},
+        {"calibre_browse_series", true},
     }
     local return_menu = {}
     -- add default action to the top of the submenu
@@ -998,6 +1046,18 @@ function ReaderGesture:setupGesture(ges, action)
         ratio_w = DTAP_ZONE_BOTTOM_RIGHT.w,
         ratio_h = DTAP_ZONE_BOTTOM_RIGHT.h,
     }
+    local zone_left = {
+        ratio_x = DDOUBLE_TAP_ZONE_PREV_CHAPTER.x,
+        ratio_y = DDOUBLE_TAP_ZONE_PREV_CHAPTER.y,
+        ratio_w = DDOUBLE_TAP_ZONE_PREV_CHAPTER.w,
+        ratio_h = DDOUBLE_TAP_ZONE_PREV_CHAPTER.h,
+    }
+    local zone_right = {
+        ratio_x = DDOUBLE_TAP_ZONE_NEXT_CHAPTER.x,
+        ratio_y = DDOUBLE_TAP_ZONE_NEXT_CHAPTER.y,
+        ratio_w = DDOUBLE_TAP_ZONE_NEXT_CHAPTER.w,
+        ratio_h = DDOUBLE_TAP_ZONE_NEXT_CHAPTER.h,
+    }
 
     local overrides_tap_corner
     local overrides_hold_corner
@@ -1073,6 +1133,24 @@ function ReaderGesture:setupGesture(ges, action)
         ges_type = "tap"
         zone = zone_bottom_left_corner
         overrides = overrides_tap_corner
+    elseif ges == "double_tap_left_side" then
+        ges_type = "double_tap"
+        zone = zone_left
+    elseif ges == "double_tap_right_side" then
+        ges_type = "double_tap"
+        zone = zone_right
+    elseif ges == "double_tap_top_left_corner" then
+        ges_type = "double_tap"
+        zone = zone_top_left_corner
+    elseif ges == "double_tap_top_right_corner" then
+        ges_type = "double_tap"
+        zone = zone_top_right_corner
+    elseif ges == "double_tap_bottom_right_corner" then
+        ges_type = "double_tap"
+        zone = zone_bottom_right_corner
+    elseif ges == "double_tap_bottom_left_corner" then
+        ges_type = "double_tap"
+        zone = zone_bottom_left_corner
     elseif ges == "hold_top_left_corner" then
         ges_type = "hold"
         zone = zone_top_left_corner
@@ -1264,33 +1342,22 @@ function ReaderGesture:registerGesture(ges, action, ges_type, zone, overrides, d
     })
 end
 
-local function lightFrontlight()
-    return Device:hasLightLevelFallback() and G_reader_settings:nilOrTrue("light_fallback")
-end
-
 function ReaderGesture:gestureAction(action, ges)
     if action == "ignore"
         or (ges.ges == "hold" and self.ignore_hold_corners) then
         return
-    elseif action == "reading_progress" and ReaderGesture.getReaderProgress then
-        UIManager:show(ReaderGesture.getReaderProgress())
-    elseif action == "book_statistics" and ReaderGesture.getBookStats then
-        UIManager:show(ReaderGesture.getBookStats())
-    elseif action == "stats_calendar_view" and ReaderGesture.getCalendarView then
-        UIManager:show(ReaderGesture.getCalendarView())
+    elseif action == "reading_progress" then
+        self.ui:handleEvent(Event:new("ShowReaderProgress"))
+    elseif action == "book_statistics" then
+        self.ui:handleEvent(Event:new("ShowBookStats"))
+    elseif action == "stats_calendar_view" then
+        self.ui:handleEvent(Event:new("ShowCalendarView"))
     elseif action == "toc" then
         self.ui:handleEvent(Event:new("ShowToc"))
     elseif action == "night_mode" then
-        local night_mode = G_reader_settings:isTrue("night_mode")
-        Screen:toggleNightMode()
-        UIManager:setDirty("all", "full")
-        G_reader_settings:saveSetting("night_mode", not night_mode)
+        self.ui:handleEvent(Event:new("ToggleNightMode"))
     elseif action == "full_refresh" then
-        if self.view then
-            -- update footer (time & battery)
-            self.view.footer:updateFooter()
-        end
-        UIManager:setDirty("all", "full")
+        self.ui:handleEvent(Event:new("FullRefresh"))
     elseif action == "bookmarks" then
         self.ui:handleEvent(Event:new("ShowBookmark"))
     elseif action == "history" then
@@ -1306,21 +1373,19 @@ function ReaderGesture:gestureAction(action, ges)
     elseif action == "book_status" then
         self.ui:handleEvent(Event:new("ShowBookStatus"))
     elseif action == "page_jmp_fwd_10" then
-        self:pageUpdate(10)
+        self.ui:handleEvent(Event:new("GotoRelativePage", 10))
     elseif action == "page_jmp_fwd_1" then
         self.ui:handleEvent(Event:new("GotoViewRel", 1))
     elseif action == "page_jmp_back_10" then
-        self:pageUpdate(-10)
+        self.ui:handleEvent(Event:new("GotoRelativePage", -10))
     elseif action == "page_jmp_back_1" then
         self.ui:handleEvent(Event:new("GotoViewRel", -1))
     elseif action == "next_chapter" then
         self.ui:handleEvent(Event:new("GotoNextChapter"))
     elseif action == "first_page" then
-        self.ui:handleEvent(Event:new("GotoPage", 1))
+        self.ui:handleEvent(Event:new("GoToBeginning"))
     elseif action == "last_page" then
-        if self.view.document then
-            self.ui:handleEvent(Event:new("GotoPage", self.view.document:getPageCount()))
-        end
+        self.ui:handleEvent(Event:new("GoToEnd"))
     elseif action == "prev_chapter" then
         self.ui:handleEvent(Event:new("GotoPrevChapter"))
     elseif action == "next_bookmark" then
@@ -1338,35 +1403,23 @@ function ReaderGesture:gestureAction(action, ges)
     elseif action == "latest_bookmark" then
         self.ui:handleEvent(Event:new("GoToLatestBookmark"))
     elseif action == "follow_nearest_link" then
-        self.ui:handleEvent(Event:new("GoToPageLink", ges, false, G_reader_settings:isTrue("footnote_link_in_popup")))
+        self.ui:handleEvent(Event:new("GoToPageLink", ges))
     elseif action == "follow_nearest_internal_link" then
-        self.ui:handleEvent(Event:new("GoToPageLink", ges, true, G_reader_settings:isTrue("footnote_link_in_popup")))
+        self.ui:handleEvent(Event:new("GoToInternalPageLink", ges))
     elseif action == "clear_location_history" then
         self.ui:handleEvent(Event:new("ClearLocationStack", true)) -- show_notification
     elseif action == "filemanager" then
-        self.ui:onClose()
-        self.ui:showFileManager()
+        self.ui:handleEvent(Event:new("Home"))
     elseif action == "file_search" then
-        if self.ges_mode == "gesture_fm" then
-            self.ui:handleEvent(Event:new("ShowFileSearch", self.ui.file_chooser.path))
-        else
-            local last_dir = self.ui:getLastDirFile()
-            self.ui:handleEvent(Event:new("ShowFileSearch", last_dir))
-        end
+        self.ui:handleEvent(Event:new("ShowFileSearch"))
     elseif action == "folder_up" then
-        self.ui.file_chooser:changeToPath(string.format("%s/..", self.ui.file_chooser.path))
+        self.ui:handleEvent(Event:new("FolderUp"))
     elseif action == "show_plus_menu" then
         self.ui:handleEvent(Event:new("ShowPlusMenu"))
     elseif action == "folder_shortcuts" then
         self.ui:handleEvent(Event:new("ShowFolderShortcutsDialog"))
     elseif action == "open_previous_document" then
-        -- FileManager
-        if self.ui.menu.openLastDoc and G_reader_settings:readSetting("lastfile") ~= nil then
-            self.ui.menu:openLastDoc()
-        -- ReaderUI
-        elseif self.ui.switchDocument and self.ui.menu then
-            self.ui:switchDocument(self.ui.menu:getPreviousFile())
-        end
+        self.ui:handleEvent(Event:new("OpenLastDoc"))
     elseif action == "dictionary_lookup" then
         self.ui:handleEvent(Event:new("ShowDictionaryLookup"))
     elseif action == "wikipedia_lookup" then
@@ -1374,188 +1427,55 @@ function ReaderGesture:gestureAction(action, ges)
     elseif action == "fulltext_search" then
         self.ui:handleEvent(Event:new("ShowFulltextSearchInput"))
     elseif action == "show_menu" then
-        if self.ges_mode == "gesture_fm" then
-            self.ui:handleEvent(Event:new("ShowMenu"))
-        else
-            self.ui:handleEvent(Event:new("ShowReaderMenu"))
-        end
+        self.ui:handleEvent(Event:new("ShowMenu"))
     elseif action == "show_config_menu" then
         self.ui:handleEvent(Event:new("ShowConfigMenu"))
     elseif action == "show_frontlight_dialog" then
-        if self.ges_mode == "gesture_fm" then
-            local ReaderFrontLight = require("apps/reader/modules/readerfrontlight")
-            ReaderFrontLight:onShowFlDialog()
-        else
-            self.ui:handleEvent(Event:new("ShowFlDialog"))
-        end
+        self.ui:handleEvent(Event:new("ShowFlDialog"))
     elseif action == "increase_frontlight" then
-        -- when using frontlight system settings
-        if lightFrontlight() then
-            UIManager:show(Notification:new{
-                text = _("Frontlight controlled by system settings."),
-                timeout = 2.5,
-            })
-            return true
-        end
-        if self.ges_mode == "gesture_fm" then
-            local ReaderFrontLight = require("apps/reader/modules/readerfrontlight")
-            ReaderFrontLight:onChangeFlIntensity(ges, 1)
-        else
-            self.ui:handleEvent(Event:new("ChangeFlIntensity", ges, 1))
-        end
+        self.ui:handleEvent(Event:new("IncreaseFlIntensity", ges))
     elseif action == "decrease_frontlight" then
-        -- when using frontlight system settings
-        if lightFrontlight() then
-            UIManager:show(Notification:new{
-                text = _("Frontlight controlled by system settings."),
-                timeout = 2.5,
-            })
-            return true
-        end
-        if self.ges_mode == "gesture_fm" then
-            local ReaderFrontLight = require("apps/reader/modules/readerfrontlight")
-            ReaderFrontLight:onChangeFlIntensity(ges, -1)
-        else
-            self.ui:handleEvent(Event:new("ChangeFlIntensity", ges, -1))
-        end
+        self.ui:handleEvent(Event:new("DecreaseFlIntensity", ges))
     elseif action == "increase_frontlight_warmth" then
-        if self.ges_mode == "gesture_fm" then
-            local ReaderFrontLight = require("apps/reader/modules/readerfrontlight")
-            ReaderFrontLight:onChangeFlWarmth(ges, 1)
-        else
-            self.ui:handleEvent(Event:new("ChangeFlWarmth", ges, 1))
-        end
+        self.ui:handleEvent(Event:new("IncreaseFlWarmth", ges))
     elseif action == "decrease_frontlight_warmth" then
-        if self.ges_mode == "gesture_fm" then
-            local ReaderFrontLight = require("apps/reader/modules/readerfrontlight")
-            ReaderFrontLight:onChangeFlWarmth(ges, -1)
-        else
-            self.ui:handleEvent(Event:new("ChangeFlWarmth", ges, -1))
-        end
+        self.ui:handleEvent(Event:new("DecreaseFlWarmth", ges))
     elseif action == "toggle_bookmark" then
         self.ui:handleEvent(Event:new("ToggleBookmark"))
     elseif action == "toggle_inverse_reading_order" then
-        self:onToggleReadingOrder()
+        self.ui:handleEvent(Event:new("ToggleReadingOrder"))
     elseif action == "toggle_frontlight" then
-        -- when using frontlight system settings
-        if lightFrontlight() then
-            UIManager:show(Notification:new{
-                text = _("Frontlight controlled by system settings."),
-                timeout = 2.5,
-            })
-            return true
-        end
-        Device:getPowerDevice():toggleFrontlight()
-        self:onShowFLOnOff()
+        self.ui:handleEvent(Event:new("ToggleFrontlight"))
     elseif action == "toggle_hold_corners" then
         self:onIgnoreHoldCorners()
     elseif action == "toggle_gsensor" then
-        G_reader_settings:flipNilOrFalse("input_ignore_gsensor")
-        Device:toggleGSensor(not G_reader_settings:isTrue("input_ignore_gsensor"))
-        self:onGSensorToggle()
+        self.ui:handleEvent(Event:new("ToggleGSensor"))
     elseif action == "toggle_page_flipping" then
-        if not self.ui.document.info.has_pages then
-            -- ReaderRolling has no support (yet) for onTogglePageFlipping,
-            -- so don't make that top left tap area unusable (and allow
-            -- taping on links there)
-            return false
-        end
         self.ui:handleEvent(Event:new("TogglePageFlipping"))
     elseif action == "toggle_reflow" then
-        if not self.document.info.has_pages then return end
-        if self.document.configurable.text_wrap == 1 then
-            self.document.configurable.text_wrap = 0
-        else
-            self.document.configurable.text_wrap = 1
-        end
-        self.ui:handleEvent(Event:new("RedrawCurrentPage"))
-        self.ui:handleEvent(Event:new("RestoreZoomMode"))
-        self.ui:handleEvent(Event:new("InitScrollPageStates"))
+        self.ui:handleEvent(Event:new("ToggleReflow"))
     elseif action == "toggle_rotation" then
-        local event_name = self.document.info.has_pages and "SwapScreenMode" or "ChangeScreenMode"
-        local arg = Screen:getScreenMode() == "portrait" and "landscape" or "portrait"
-        self.ui:handleEvent(Event:new(event_name, arg))
+        self.ui:handleEvent(Event:new("ToggleRotation"))
     elseif action == "toggle_wifi" then
-        local NetworkMgr = require("ui/network/manager")
-
-        if not NetworkMgr:isOnline() then
-            UIManager:show(InfoMessage:new{
-                text = _("Turning on Wi-Fi…"),
-                timeout = 1,
-            })
-
-            -- NB Normal widgets should use NetworkMgr:promptWifiOn()
-            -- This is specifically the toggle wifi action, so consent is implied.
-            NetworkMgr:turnOnWifi()
-        else
-            NetworkMgr:turnOffWifi()
-
-            UIManager:show(InfoMessage:new{
-                text = _("Wi-Fi off."),
-                timeout = 1,
-            })
-        end
+        self.ui:handleEvent(Event:new("ToggleWifi"))
     elseif action == "wifi_off" then
-        local NetworkMgr = require("ui/network/manager")
-        -- can't hurt
-        NetworkMgr:turnOffWifi()
-
-        UIManager:show(InfoMessage:new{
-            text = _("Wi-Fi off."),
-            timeout = 1,
-        })
+        self.ui:handleEvent(Event:new("InfoWifiOff"))
     elseif action == "wifi_on" then
-        local NetworkMgr = require("ui/network/manager")
-
-        if not NetworkMgr:isOnline() then
-            UIManager:show(InfoMessage:new{
-                text = _("Enabling wifi…"),
-                timeout = 1,
-            })
-
-            -- NB Normal widgets should use NetworkMgr:promptWifiOn()
-            -- This is specifically the toggle Wi-Fi action, so consent is implied.
-            NetworkMgr:turnOnWifi()
-        else
-            local info_text
-            local current_network = NetworkMgr:getCurrentNetwork()
-            -- this method is only available for some implementations
-            if current_network and current_network.ssid then
-                info_text = T(_("Already connected to network %1."), BD.wrap(current_network.ssid))
-            else
-                info_text = _("Already connected.")
-            end
-            UIManager:show(InfoMessage:new{
-                text = info_text,
-                timeout = 1,
-            })
-        end
+        self.ui:handleEvent(Event:new("InfoWifiOn"))
     elseif action == "increase_font" then
-        self.ui:handleEvent(Event:new("AdjustFontSize", ges, 1))
+        self.ui:handleEvent(Event:new("IncreaseFontSize", ges))
     elseif action == "decrease_font" then
-        self.ui:handleEvent(Event:new("AdjustFontSize", ges, -1))
+        self.ui:handleEvent(Event:new("DecreaseFontSize", ges))
     elseif action == "suspend" then
-        UIManager:suspend()
+        self.ui:handleEvent(Event:new("SuspendEvent"))
     elseif action == "exit" then
-        self.ui.menu:exitOrRestart()
+        self.ui:handleEvent(Event:new("Exit"))
     elseif action == "restart" then
-        self.ui.menu:exitOrRestart(function() UIManager:restartKOReader() end)
+        self.ui:handleEvent(Event:new("Restart"))
     elseif action == "reboot" then
-        UIManager:show(ConfirmBox:new{
-            text = _("Are you sure you want to reboot the device?"),
-            ok_text = _("Reboot"),
-            ok_callback = function()
-                UIManager:nextTick(UIManager.reboot_action)
-            end,
-        })
+        self.ui:handleEvent(Event:new("Reboot"))
     elseif action == "poweroff" then
-        UIManager:show(ConfirmBox:new{
-            text = _("Are you sure you want to power off the device?"),
-            ok_text = _("Power off"),
-            ok_callback = function()
-                UIManager:nextTick(UIManager.poweroff_action)
-            end,
-        })
+        self.ui:handleEvent(Event:new("PowerOff"))
     elseif action == "zoom_contentwidth" then
         self.ui:handleEvent(Event:new("SetZoomMode", "contentwidth"))
     elseif action == "zoom_contentheight" then
@@ -1580,6 +1500,12 @@ function ReaderGesture:gestureAction(action, ges)
         self.ui:handleEvent(Event:new("KOSyncPushProgress"))
     elseif action == "kosync_pull_progress" then
         self.ui:handleEvent(Event:new("KOSyncPullProgress"))
+    elseif action == "calibre_search" then
+        self.ui:handleEvent(Event:new("CalibreSearch"))
+    elseif action == "calibre_browse_tags" then
+        self.ui:handleEvent(Event:new("CalibreBrowseTags"))
+    elseif action == "calibre_browse_series" then
+        self.ui:handleEvent(Event:new("CalibreBrowseSeries"))
     end
     return true
 end
@@ -1594,15 +1520,6 @@ function ReaderGesture:multiswipeAction(multiswipe_directions, ges)
     end
 end
 
-function ReaderGesture:pageUpdate(page)
-    local curr_page = self.ui:getCurrentPage()
-    if curr_page and page then
-        curr_page = curr_page + page
-        self.ui:handleEvent(Event:new("GotoPage", curr_page))
-    end
-
-end
-
 function ReaderGesture:onIgnoreHoldCorners(ignore_hold_corners)
     if ignore_hold_corners == nil then
         G_reader_settings:flipNilOrFalse("ignore_hold_corners")
@@ -1610,50 +1527,6 @@ function ReaderGesture:onIgnoreHoldCorners(ignore_hold_corners)
         G_reader_settings:saveSetting("ignore_hold_corners", ignore_hold_corners)
     end
     self.ignore_hold_corners = G_reader_settings:isTrue("ignore_hold_corners")
-    return true
-end
-
-function ReaderGesture:onShowFLOnOff()
-    local powerd = Device:getPowerDevice()
-    local new_text
-    if powerd.is_fl_on then
-        new_text = _("Frontlight on.")
-    else
-        new_text = _("Frontlight off.")
-    end
-    UIManager:show(Notification:new{
-        text = new_text,
-        timeout = 1.0,
-    })
-    return true
-end
-
-function ReaderGesture:onGSensorToggle()
-    local new_text
-    if G_reader_settings:isTrue("input_ignore_gsensor") then
-        new_text = _("Accelerometer rotation events off.")
-    else
-        new_text = _("Accelerometer rotation events on.")
-    end
-    UIManager:show(Notification:new{
-        text = new_text,
-        timeout = 1.0,
-    })
-    return true
-end
-
-function ReaderGesture:onToggleReadingOrder()
-    local document_module = self.ui.document.info.has_pages and self.ui.paging or self.ui.rolling
-    document_module.inverse_reading_order = not document_module.inverse_reading_order
-    document_module:setupTouchZones()
-    local is_rtl = BD.mirroredUILayout()
-    if document_module.inverse_reading_order then
-        is_rtl = not is_rtl
-    end
-    UIManager:show(Notification:new{
-        text = is_rtl and _("RTL page turning.") or _("LTR page turning."),
-        timeout = 2.5,
-    })
     return true
 end
 

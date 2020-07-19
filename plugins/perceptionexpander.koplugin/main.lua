@@ -52,8 +52,8 @@ function PerceptionExpander:createUI(readSettings)
 
     self.screen_width = Screen:getWidth()
     local screen_height = Screen:getHeight()
-    local line_height = screen_height * 0.9
-    local line_top_position = screen_height * 0.05
+    local line_height = math.floor(screen_height * 0.9)
+    local line_top_position = math.floor(screen_height * 0.05)
 
     self.last_screen_mode = Screen:getScreenMode()
     if self.last_screen_mode == "landscape" then
@@ -128,7 +128,7 @@ function PerceptionExpander:showSettingsDialog()
             {
                 text = "",
                 input_type = "number",
-                hint = T(_("Increase margin after pages. Current value: %1"),
+                hint = T(_("Increase margin after pages. Current value: %1\nSet to 0 to disable."),
                     self.shift_each_pages),
             },
         },
@@ -152,8 +152,8 @@ function PerceptionExpander:showSettingsDialog()
                 },
             },
         },
-        width = Screen:getWidth() * 0.8,
-        height = Screen:getHeight() * 0.3,
+        width = math.floor(Screen:getWidth() * 0.8),
+        height = math.floor(Screen:getHeight() * 0.3),
     }
     UIManager:show(self.settings_dialog)
     self.settings_dialog:onShowKeyboard()
@@ -203,7 +203,7 @@ function PerceptionExpander:onPageUpdate(pageno)
         self:createUI()
     end
 
-    if self.page_counter >= self.shift_each_pages and self.margin < self.ALMOST_CENTER_OF_THE_SCREEN then
+    if self.shift_each_pages ~= 0 and self.page_counter >= self.shift_each_pages and self.margin < self.ALMOST_CENTER_OF_THE_SCREEN then
         self.page_counter = 0
         self.margin = self.margin + self.margin_shift
         self.left_line.dimen.x = self.screen_width * self.margin

@@ -27,11 +27,10 @@ if Device:isCervantes() then
 end
 
 if Device:hasFrontlight() then
-    local ReaderFrontLight = require("apps/reader/modules/readerfrontlight")
     common_settings.frontlight = {
         text = _("Frontlight"),
         callback = function()
-            ReaderFrontLight:onShowFlDialog()
+            UIManager:broadcastEvent(Event:new("ShowFlDialog"))
         end,
     }
 end
@@ -166,10 +165,7 @@ common_settings.night_mode = {
     text = _("Night mode"),
     checked_func = function() return G_reader_settings:isTrue("night_mode") end,
     callback = function()
-        local night_mode = G_reader_settings:isTrue("night_mode")
-        Screen:toggleNightMode()
-        UIManager:setDirty(nil, "full")
-        G_reader_settings:saveSetting("night_mode", not night_mode)
+        UIManager:broadcastEvent(Event:new("ToggleNightMode"))
     end
 }
 common_settings.network = {
@@ -180,6 +176,7 @@ NetworkMgr:getMenuTable(common_settings)
 common_settings.screen = {
     text = _("Screen"),
 }
+common_settings.screen_rotation = require("ui/elements/screen_rotation_menu_table")
 common_settings.screen_dpi = require("ui/elements/screen_dpi_menu_table")
 common_settings.screen_eink_opt = require("ui/elements/screen_eink_opt_menu_table")
 common_settings.menu_activate = require("ui/elements/menu_activate")
@@ -193,10 +190,6 @@ common_settings.ignore_hold_corners = {
         UIManager:broadcastEvent(Event:new("IgnoreHoldCorners"))
     end,
 }
-
-if Device:canToggleGSensor() then
-    common_settings.screen_toggle_gsensor = require("ui/elements/screen_toggle_gsensor")
-end
 
 -- NOTE: Allow disabling color if it's mistakenly enabled on a Grayscale screen (after a settings import?)
 if Screen:isColorEnabled() or Screen:isColorScreen() then
@@ -237,6 +230,16 @@ if Device:isAndroid() then
         text = _("Camera key toggles touchscreen support"),
         checked_func = function() return G_reader_settings:isTrue("camera_key_toggles_touchscreen") end,
         callback = function() G_reader_settings:flipNilOrFalse("camera_key_toggles_touchscreen") end,
+    }
+
+    common_settings.android_back_button = {
+        text = _("Ignore back button completely"),
+        checked_func = function() return android.isBackButtonIgnored() end,
+        callback = function()
+            local is_ignored = android.isBackButtonIgnored()
+            android.setBackButtonIgnored(not is_ignored)
+            G_reader_settings:saveSetting("android_ignore_back_button", not is_ignored)
+        end,
     }
 
     -- fullscreen toggle on devices with compatible fullscreen methods (apis 14-18)

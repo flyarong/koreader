@@ -1,6 +1,6 @@
 local BD = require("ui/bidi")
-local ConfirmBox = require("ui/widget/confirmbox")
 local Device = require("device")
+local Event = require("ui/event")
 local InfoMessage = require("ui/widget/infomessage")
 local UIManager = require("ui/uimanager")
 local _ = require("gettext")
@@ -25,8 +25,8 @@ common_info.version = {
 common_info.help = {
     text = _("Help"),
 }
-common_info.more_plugins = {
-    text = _("More plugins"),
+common_info.more_tools = {
+    text = _("More tools"),
 }
 
 common_info.device = {
@@ -55,19 +55,14 @@ common_info.report_bug = {
     text = _("Report a bug"),
     keep_menu_open = true,
     callback = function()
-        local device = Device.model
-        if Device:isAndroid() then
-            device = Device:info()
-        end
-
         UIManager:show(InfoMessage:new{
             text = T(_("Please report bugs to \nhttps://github.com/koreader/koreader/issues\n\nVersion:\n%1\n\nDetected device:\n%2"),
-                version, device),
+                version, Device:info()),
         })
     end
 }
 
-if Device:isCervantes() or Device:isKindle() or Device:isKobo() then
+if Device:canSuspend() then
     common_info.sleep = {
         text = _("Sleep"),
         callback = function()
@@ -80,13 +75,7 @@ if Device:canReboot() then
         text = _("Reboot the device"),
         keep_menu_open = true,
         callback = function()
-            UIManager:show(ConfirmBox:new{
-                text = _("Are you sure you want to reboot the device?"),
-                ok_text = _("Reboot"),
-                ok_callback = function()
-                    UIManager:nextTick(UIManager.reboot_action)
-                end,
-            })
+            UIManager:broadcastEvent(Event:new("Reboot"))
         end
     }
 end
@@ -95,13 +84,7 @@ if Device:canPowerOff() then
         text = _("Power off"),
         keep_menu_open = true,
         callback = function()
-            UIManager:show(ConfirmBox:new{
-                text = _("Are you sure you want to power off the device?"),
-                ok_text = _("Power off"),
-                ok_callback = function()
-                    UIManager:nextTick(UIManager.poweroff_action)
-                end,
-            })
+            UIManager:broadcastEvent(Event:new("PowerOff"))
         end
     }
 end

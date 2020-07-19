@@ -32,7 +32,7 @@ local TweakInfoWidget = InputContainer:new{
     is_global_default = nil,
     toggle_global_default_callback = function() end,
     modal = true,
-    width = Screen:getWidth()*3/4,
+    width = math.floor(Screen:getWidth() * 0.75),
 }
 
 function TweakInfoWidget:init()
@@ -594,7 +594,8 @@ p.someTitleClassName { text-indent: 0; }
 DIV.advertisement { display: none !important; }
 
 .footnoteContainerClassName {
-    font-size: 80%;
+    font-size: 0.8rem !important;
+    text-align: justify !important;
     margin: 0 !important;
     -cr-hint: footnote-inpage;
 }

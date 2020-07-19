@@ -5,6 +5,7 @@ local Device = require("device")
 local Event = require("ui/event")
 local InputContainer = require("ui/widget/container/inputcontainer")
 local MultiConfirmBox = require("ui/widget/multiconfirmbox")
+local Notification = require("ui/widget/notification")
 local ProgressWidget = require("ui/widget/progresswidget")
 local ReaderPanning = require("apps/reader/modules/readerpanning")
 local Size = require("ui/size")
@@ -322,15 +323,6 @@ function ReaderRolling:setupTouchZones()
         ratio_w = DTAP_ZONE_BACKWARD.w, ratio_h = DTAP_ZONE_BACKWARD.h,
     }
 
-    local forward_double_tap_zone = {
-        ratio_x = DDOUBLE_TAP_ZONE_NEXT_CHAPTER.x, ratio_y = DDOUBLE_TAP_ZONE_NEXT_CHAPTER.y,
-        ratio_w = DDOUBLE_TAP_ZONE_NEXT_CHAPTER.w, ratio_h = DDOUBLE_TAP_ZONE_NEXT_CHAPTER.h,
-    }
-    local backward_double_tap_zone = {
-        ratio_x = DDOUBLE_TAP_ZONE_PREV_CHAPTER.x, ratio_y = DDOUBLE_TAP_ZONE_PREV_CHAPTER.y,
-        ratio_w = DDOUBLE_TAP_ZONE_PREV_CHAPTER.w, ratio_h = DDOUBLE_TAP_ZONE_PREV_CHAPTER.h,
-    }
-
     local do_mirror = BD.mirroredUILayout()
     if self.inverse_reading_order then
         do_mirror = not do_mirror
@@ -338,11 +330,6 @@ function ReaderRolling:setupTouchZones()
     if do_mirror then
         forward_zone.ratio_x = 1 - forward_zone.ratio_x - forward_zone.ratio_w
         backward_zone.ratio_x = 1 - backward_zone.ratio_x - backward_zone.ratio_w
-
-        forward_double_tap_zone.ratio_x =
-            1 - forward_double_tap_zone.ratio_x - forward_double_tap_zone.ratio_w
-        backward_double_tap_zone.ratio_x =
-            1 - backward_double_tap_zone.ratio_x - backward_double_tap_zone.ratio_w
     end
 
     self.ui:registerTouchZones({
@@ -357,18 +344,6 @@ function ReaderRolling:setupTouchZones()
             ges = "tap",
             screen_zone = backward_zone,
             handler = function() return self:onGotoViewRel(-1) end,
-        },
-        {
-            id = "double_tap_forward",
-            ges = "double_tap",
-            screen_zone = forward_double_tap_zone,
-            handler = function() return self:onGotoNextChapter() end
-        },
-        {
-            id = "double_tap_backward",
-            ges = "double_tap",
-            screen_zone = backward_double_tap_zone,
-            handler = function() return self:onGotoPrevChapter() end
         },
         {
             id = "rolling_swipe",
@@ -453,7 +428,7 @@ You can set how many lines are shown.]])
             callback = function(touchmenu_instance)
                 local SpinWidget = require("ui/widget/spinwidget")
                 UIManager:show(SpinWidget:new{
-                    width = Screen:getWidth() * 0.75,
+                    width = math.floor(Screen:getWidth() * 0.75),
                     value = G_reader_settings:readSetting("copt_overlap_lines") or 1,
                     value_min = 1,
                     value_max = 10,
@@ -510,7 +485,7 @@ function ReaderRolling:onSwipe(_, ges)
         end
     else
         -- update footer (time & battery)
-        self.view.footer:updateFooter()
+        self.view.footer:onUpdateFooter()
         -- trigger full refresh
         UIManager:setDirty(nil, "full")
     end
@@ -634,7 +609,7 @@ function ReaderRolling:onGotoXPointer(xp, marker_xp)
                 if BD.mirroredUILayout() then
                     -- In the middle margin, on the right of text
                     -- Same trick as below, assuming page2_x is equal to page 1 right x
-                    screen_x = Screen:getWidth() / 2
+                    screen_x = math.floor(Screen:getWidth() * 0.5)
                     local page2_x = self.ui.document:getPageOffsetX(self.ui.document:getCurrentPage()+1)
                     marker_w = page2_x + marker_w - screen_x
                     screen_x = screen_x - marker_w
@@ -648,7 +623,7 @@ function ReaderRolling:onGotoXPointer(xp, marker_xp)
                     -- In the middle margin, on the left of text
                     -- This is a bit tricky with how the middle margin is sized
                     -- by crengine (see LVDocView::updateLayout() in lvdocview.cpp)
-                    screen_x = Screen:getWidth() / 2
+                    screen_x = math.floor(Screen:getWidth() * 0.5)
                     local page2_x = self.ui.document:getPageOffsetX(self.ui.document:getCurrentPage()+1)
                     marker_w = page2_x + marker_w - screen_x
                 end
@@ -812,7 +787,7 @@ function ReaderRolling:updatePos()
         self.old_doc_height = new_height
         self.old_page = new_page
         self.ui:handleEvent(Event:new("UpdateToc"))
-        self.view.footer:updateFooter()
+        self.view.footer:onUpdateFooter()
     end
     self:updateTopStatusBarMarkers()
     UIManager:setDirty(self.view.dialog, "partial")
@@ -874,14 +849,6 @@ function ReaderRolling:onSetDimensions(dimen)
         self.ui.document:enableInternalHistory(false)
         self:onRedrawCurrentView()
     end
-end
-
-function ReaderRolling:onChangeScreenMode(mode, rotation)
-    -- Flag it as interactive so we can properly swap to Inverted orientations
-    -- (we usurp the second argument, which usually means rotation)
-    self.ui:handleEvent(Event:new("SetScreenMode", mode, rotation or true))
-    -- (This had the above ReaderRolling:onSetDimensions() called to resize
-    -- document dimensions and keep up with current position)
 end
 
 function ReaderRolling:onColorRenderingUpdate()
@@ -1086,7 +1053,7 @@ function ReaderRolling:showEngineProgress(percent)
         -- so it does not override the footer or a bookmark dogear
         local x = 0
         local y = Size.margin.small
-        local w = Screen:getWidth() / 3
+        local w = math.floor(Screen:getWidth() / 3)
         local h = Size.line.progress
         if self.engine_progress_widget then
             self.engine_progress_widget:setPercentage(percent)
@@ -1330,6 +1297,21 @@ Note that %1 (out of %2) xpaths from your bookmarks and highlights have been nor
             end)
         end,
     })
+end
+
+-- Duplicated in ReaderPaging
+function ReaderRolling:onToggleReadingOrder()
+    self.inverse_reading_order = not self.inverse_reading_order
+    self:setupTouchZones()
+    local is_rtl = BD.mirroredUILayout()
+    if self.inverse_reading_order then
+        is_rtl = not is_rtl
+    end
+    UIManager:show(Notification:new{
+        text = is_rtl and _("RTL page turning.") or _("LTR page turning."),
+        timeout = 2.5,
+    })
+    return true
 end
 
 return ReaderRolling

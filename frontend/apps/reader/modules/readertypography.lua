@@ -231,7 +231,7 @@ When the book's language tag is not among our presets, no specific features will
                 title = _("Language tags (and hyphenation dictionaries) used since start up"),
                 text = status_text,
                 text_face = Font:getFace("smallinfont"),
-                height = Screen:getHeight() * 4/5,
+                height = math.floor(Screen:getHeight() * 0.8),
             })
         end,
         keep_menu_open = true,
@@ -412,7 +412,7 @@ When the book's language tag is not among our presets, no specific features will
                 right_default = alg_right_hyphen_min,
                 -- let room on the widget sides so we can see
                 -- the hyphenation changes happening
-                width = Screen:getWidth() * 0.6,
+                width = math.floor(Screen:getWidth() * 0.6),
                 default_values = true,
                 default_text = _("Use language defaults"),
                 title_text = _("Hyphenation limits"),

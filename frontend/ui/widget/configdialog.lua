@@ -824,7 +824,8 @@ function ConfigDialog:init()
     end
     if Device:hasKeys() then
         -- set up keyboard events
-        self.key_events.Close = { {"Back"}, doc = "close config menu" }
+        local close_keys = Device:hasFewKeys() and { "Back", "Left" } or "Back"
+        self.key_events.Close = { { close_keys }, doc = "close config menu" }
     end
     if Device:hasDPad() then
         self.key_events.Select = { {"Press"}, doc = "select current menu item" }
@@ -1103,7 +1104,7 @@ function ConfigDialog:onConfigMoreChoose(values, name, event, args, name_text, d
                 -- (No support for value_table - add it if needed)
                 local curr_values = self.configurable[name]
                 widget = DoubleSpinWidget:new{
-                    width = Screen:getWidth() * 0.6,
+                    width = math.floor(Screen:getWidth() * 0.6),
                     left_text = more_options_param.left_text,
                     right_text = more_options_param.right_text,
                     left_value = curr_values[1],
@@ -1181,7 +1182,7 @@ function ConfigDialog:onConfigMoreChoose(values, name, event, args, name_text, d
                     end
                 end
                 widget = SpinWidget:new{
-                    width = Screen:getWidth() * 0.6,
+                    width = math.floor(Screen:getWidth() * 0.6),
                     value = curr_items,
                     value_index = value_index,
                     value_table = more_options_param.value_table,

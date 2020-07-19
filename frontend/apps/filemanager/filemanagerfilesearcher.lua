@@ -105,7 +105,7 @@ function FileSearcher:close()
     end
 end
 
-function FileSearcher:onShowFileSearch(search_path)
+function FileSearcher:onShowFileSearch()
     local dummy = self.search_value
     local enabled_search_home_dir = true
     if not G_reader_settings:readSetting("home_dir") then
@@ -114,7 +114,7 @@ function FileSearcher:onShowFileSearch(search_path)
     self.search_dialog = InputDialog:new{
         title = _("Search for books by filename"),
         input = self.search_value,
-        width = Screen:getWidth() * 0.9,
+        width = math.floor(Screen:getWidth() * 0.9),
         buttons = {
             {
                 {
@@ -129,7 +129,7 @@ function FileSearcher:onShowFileSearch(search_path)
                     text = _("Current folder"),
                     enabled = true,
                     callback = function()
-                        self.path = search_path or lfs.currentdir()
+                        self.path = self.ui.file_chooser and self.ui.file_chooser.path or self.ui:getLastDirFile()
                         self.search_value = self.search_dialog:getInputText()
                         if self.search_value == dummy then -- probably DELETE this if/else block
                             self.use_previous_search_results = true

@@ -370,24 +370,11 @@ function Input:handleKeyBoardEv(ev)
         local Device = require("frontend/device")
         local UIManager = require("ui/uimanager")
 
-        local savequit_caller = nil
         local save_quit = function()
             Device:saveSettings()
             UIManager:quit()
         end
-
-        local FileManager = require("apps/filemanager/filemanager")
-        if FileManager.instance then
-            savequit_caller =  FileManager.instance.menu
-        end
-
-        local ReaderUI = require("apps/reader/readerui")
-        local readerui_instance = ReaderUI:_getRunningInstance()
-        if readerui_instance then
-            savequit_caller = readerui_instance.menu
-        end
-
-        savequit_caller:exitOrRestart(save_quit)
+        UIManager:broadcastEvent(Event:new("Exit", save_quit))
     end
 
     -- handle modifier keys
@@ -657,11 +644,18 @@ function Input:handleOasisOrientationEv(ev)
     end
 
     local old_rotation_mode = self.device.screen:getRotationMode()
-    local old_screen_mode = self.device.screen:getScreenMode()
-    if rotation_mode ~= old_rotation_mode and screen_mode == old_screen_mode then
-        self.device.screen:setRotationMode(rotation_mode)
-        local UIManager = require("ui/uimanager")
-        UIManager:onRotation()
+    if self.device:isGSensorLocked() then
+        local old_screen_mode = self.device.screen:getScreenMode()
+        if rotation_mode ~= old_rotation_mode and screen_mode == old_screen_mode then
+            -- Cheaper than a full SetRotationMode event, as we don't need to re-layout anything.
+            self.device.screen:setRotationMode(rotation_mode)
+            local UIManager = require("ui/uimanager")
+            UIManager:onRotation()
+        end
+    else
+        if rotation_mode ~= old_rotation_mode then
+            return Event:new("SetRotationMode", rotation_mode)
+        end
     end
 end
 
@@ -695,30 +689,30 @@ function Input:handleMiscEvNTX(ev)
     end
 
     local old_rotation_mode = self.device.screen:getRotationMode()
-    local old_screen_mode = self.device.screen:getScreenMode()
-    -- NOTE: Try to handle ScreenMode changes sanely, without wrecking the FM, which only supports Portrait/Inverted ;).
-    -- NOTE: See the Oasis version just above us for a variant that's locked to the current ScreenMode.
-    --       Might be nice to expose the two behaviors to the user, somehow?
-    if rotation_mode ~= old_rotation_mode then
-        if screen_mode ~= old_screen_mode then
-            return Event:new("SwapScreenMode", screen_mode, rotation_mode)
-        else
+    if self.device:isGSensorLocked() then
+        local old_screen_mode = self.device.screen:getScreenMode()
+        if rotation_mode and rotation_mode ~= old_rotation_mode and screen_mode == old_screen_mode then
+            -- Cheaper than a full SetRotationMode event, as we don't need to re-layout anything.
             self.device.screen:setRotationMode(rotation_mode)
             local UIManager = require("ui/uimanager")
             UIManager:onRotation()
+        end
+    else
+        if rotation_mode and rotation_mode ~= old_rotation_mode then
+            return Event:new("SetRotationMode", rotation_mode)
         end
     end
 end
 
 --- Allow toggling the accelerometer at runtime.
 function Input:toggleMiscEvNTX(toggle)
-    if toggle and toggle == true then
+    if toggle == true then
         -- Honor Gyro events
         if not self.isNTXAccelHooked then
             self.handleMiscEv = self.handleMiscEvNTX
             self.isNTXAccelHooked = true
         end
-    elseif toggle and toggle == false then
+    elseif toggle == false then
         -- Ignore Gyro events
         if self.isNTXAccelHooked then
             self.handleMiscEv = function() end

@@ -5,6 +5,7 @@ local ffi = require("ffi")
 local C = ffi.C
 local lfs = require("libs/libkoreader-lfs")
 local logger = require("logger")
+local util = require("util")
 local _ = require("gettext")
 local T = require("ffi/util").template
 
@@ -67,13 +68,15 @@ local Device = Generic:new{
     model = android.prop.product,
     hasKeys = yes,
     hasDPad = no,
+    hasExitOptions = no,
     hasEinkScreen = function() return android.isEink() end,
     hasColorScreen = function() return not android.isEink() end,
     hasFrontlight = yes,
     hasLightLevelFallback = yes,
     canRestart = no,
+    canSuspend = no,
     firmware_rev = android.app.activity.sdkVersion,
-    external_storage = android.getExternalStoragePath,
+    home_dir = android.getExternalStoragePath(),
     display_dpi = android.lib.AConfiguration_getDensity(android.app.config),
     isHapticFeedbackEnabled = yes,
     hasClipboard = yes,
@@ -126,6 +129,7 @@ function Device:init()
         device = self,
         event_map = require("device/android/event_map"),
         handleMiscEv = function(this, ev)
+            local UIManager = require("ui/uimanager")
             logger.dbg("Android application event", ev.code)
             if ev.code == C.APP_CMD_SAVE_STATE then
                 return "SaveState"
@@ -133,6 +137,19 @@ function Device:init()
                 or ev.code == C.APP_CMD_INIT_WINDOW
                 or ev.code == C.APP_CMD_WINDOW_REDRAW_NEEDED then
                 this.device.screen:_updateWindow()
+            elseif ev.code == C.APP_CMD_CONFIG_CHANGED then
+                -- orientation and size changes
+                if android.screen.width ~= android.getScreenWidth()
+                or android.screen.height ~= android.getScreenHeight() then
+                    this.device.screen:resize()
+                    local new_size = this.device.screen:getSize()
+                    logger.info("Resizing screen to", new_size)
+                    local Event = require("ui/event")
+                    UIManager:broadcastEvent(Event:new("SetDimensions", new_size))
+                    UIManager:broadcastEvent(Event:new("ScreenResize", new_size))
+                    UIManager:broadcastEvent(Event:new("RedrawCurrentPage"))
+                end
+                -- to-do: keyboard connected, disconnected
             elseif ev.code == C.APP_CMD_RESUME then
                 EXTERNAL_DICTS_AVAILABILITY_CHECKED = false
                 if external_dict_when_back_callback then
@@ -142,7 +159,6 @@ function Device:init()
                 local new_file = android.getIntent()
                 if new_file ~= nil and lfs.attributes(new_file, "mode") == "file" then
                     -- we cannot blit to a window here since we have no focus yet.
-                    local UIManager = require("ui/uimanager")
                     local InfoMessage = require("ui/widget/infomessage")
                     local BD = require("ui/bidi")
                     UIManager:scheduleIn(0.1, function()
@@ -159,7 +175,6 @@ function Device:init()
                     local content_path = android.getLastImportedPath()
                     if content_path ~= nil then
                         local FileManager = require("apps/filemanager/filemanager")
-                        local UIManager = require("ui/uimanager")
                         UIManager:scheduleIn(0.5, function()
                             if FileManager.instance then
                                 FileManager.instance:onRefresh()
@@ -224,6 +239,11 @@ function Device:init()
         android.setVolumeKeysIgnored(true)
     end
 
+    -- check if we ignore the back button completely
+    if G_reader_settings:isTrue("android_ignore_back_button") then
+        android.setBackButtonIgnored(true)
+    end
+
     -- check if we enable a custom light level for this activity
     local last_value = G_reader_settings:readSetting("fl_last_level")
     if type(last_value) == "number" and last_value >= 0 then
@@ -255,6 +275,10 @@ end
 
 function Device:performHapticFeedback(type)
     android.hapticFeedback(C["AHAPTIC_"..type])
+end
+
+function Device:setIgnoreInput(enable)
+    android.setIgnoreInput(enable)
 end
 
 function Device:retrieveNetworkInfo()
@@ -312,21 +336,27 @@ end
 
 function Device:info()
     local is_eink, eink_platform = android.isEink()
+    local product_type = android.getPlatformName()
 
     local common_text = T(_("%1\n\nOS: Android %2, api %3\nBuild flavor: %4\n"),
         android.prop.product, getCodename(), Device.firmware_rev, android.prop.flavor)
 
+    local platform_text = ""
+    if product_type ~= "android" then
+        platform_text = "\n" .. T(_("Device type: %1"), product_type) .. "\n"
+    end
+
     local eink_text = ""
     if is_eink then
-        eink_text = T(_("\nE-ink display supported.\nPlatform: %1\n"), eink_platform)
+        eink_text = "\n" .. T(_("E-ink display supported.\nPlatform: %1"), eink_platform) .. "\n"
     end
 
     local wakelocks_text = ""
     if android.needsWakelocks() then
-        wakelocks_text = _("\nThis device needs CPU, screen and touchscreen always on.\nScreen timeout will be ignored while the app is in the foreground!\n")
+        wakelocks_text = "\n" .. _("This device needs CPU, screen and touchscreen always on.\nScreen timeout will be ignored while the app is in the foreground!") .. "\n"
     end
 
-    return common_text..eink_text..wakelocks_text
+    return common_text..platform_text..eink_text..wakelocks_text
 end
 
 function Device:epdTest()
@@ -336,6 +366,13 @@ end
 function Device:exit()
     android.LOGI(string.format("Stopping %s main activity", android.prop.name));
     android.lib.ANativeActivity_finish(android.app.activity)
+end
+
+function Device:canExecuteScript(file)
+    local file_ext = string.lower(util.getFileNameSuffix(file))
+    if android.prop.flavor ~= "fdroid" and file_ext == "sh"  then
+        return true
+    end
 end
 
 android.LOGI(string.format("Android %s - %s (API %d) - flavor: %s",

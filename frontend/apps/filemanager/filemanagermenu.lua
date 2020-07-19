@@ -6,7 +6,6 @@ local Device = require("device")
 local Event = require("ui/event")
 local InputContainer = require("ui/widget/container/inputcontainer")
 local PluginLoader = require("pluginloader")
-local Search = require("apps/filemanager/filemanagersearch")
 local SetDefaults = require("apps/filemanager/filemanagersetdefaults")
 local UIManager = require("ui/uimanager")
 local Screen = Device.screen
@@ -88,7 +87,7 @@ function FileManagerMenu:initGesListener()
     })
 end
 
-function FileManagerMenu:openLastDoc()
+function FileManagerMenu:onOpenLastDoc()
     local last_file = G_reader_settings:readSetting("lastfile")
     if not last_file or lfs.attributes(last_file, "mode") ~= "file" then
         local InfoMessage = require("ui/widget/infomessage")
@@ -143,7 +142,7 @@ function FileManagerMenu:setUpdateItemTable()
                     local SpinWidget = require("ui/widget/spinwidget")
                     local curr_items = G_reader_settings:readSetting("items_per_page") or 14
                     local items = SpinWidget:new{
-                        width = Screen:getWidth() * 0.6,
+                        width = math.floor(Screen:getWidth() * 0.6),
                         value = curr_items,
                         value_min = 6,
                         value_max = 24,
@@ -166,7 +165,7 @@ function FileManagerMenu:setUpdateItemTable()
                     local default_font_size = math.floor(24 - ((curr_items - 6)/ 18) * 10 )
                     local curr_font_size = G_reader_settings:readSetting("items_font_size") or default_font_size
                     local items_font = SpinWidget:new{
-                        width = Screen:getWidth() * 0.6,
+                        width = math.floor(Screen:getWidth() * 0.6),
                         value = curr_font_size,
                         value_min = 10,
                         value_max = 72,
@@ -475,19 +474,11 @@ function FileManagerMenu:setUpdateItemTable()
         end,
     }
 
-    -- search tab
-    self.menu_items.find_book_in_calibre_catalog = {
-        text = _("Find a book via calibre metadata"),
-        callback = function()
-            Search:getCalibre()
-            Search:ShowSearch()
-        end
-    }
     self.menu_items.find_file = {
         -- @translators Search for files by name.
         text = _("Find a file"),
         callback = function()
-            self.ui:handleEvent(Event:new("ShowFileSearch", self.ui.file_chooser.path))
+            self.ui:handleEvent(Event:new("ShowFileSearch"))
         end
     }
 
@@ -505,7 +496,7 @@ function FileManagerMenu:setUpdateItemTable()
             return G_reader_settings:readSetting("lastfile") ~= nil
         end,
         callback = function()
-            self:openLastDoc()
+            self:onOpenLastDoc()
         end,
         hold_callback = function()
             local last_file = G_reader_settings:readSetting("lastfile")
@@ -513,7 +504,7 @@ function FileManagerMenu:setUpdateItemTable()
                 text = T(_("Would you like to open the last document: %1?"), BD.filepath(last_file)),
                 ok_text = _("OK"),
                 ok_callback = function()
-                    self:openLastDoc()
+                    self:onOpenLastDoc()
                 end,
             })
         end

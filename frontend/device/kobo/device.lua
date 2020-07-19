@@ -47,6 +47,7 @@ local Kobo = Generic:new{
     hasNaturalLightMixer = no,
     -- HW inversion is generally safe on Kobo, except on a few boards/kernels
     canHWInvert = yes,
+    home_dir = "/mnt/onboard",
 }
 
 --- @todo hasKeys for some devices?
@@ -221,6 +222,7 @@ local KoboFrost = Kobo:new{
     model = "Kobo_frost",
     hasFrontlight = yes,
     hasKeys = yes,
+    hasGSensor = yes,
     canToggleGSensor = yes,
     touch_snow_protocol = true,
     misc_ntx_gsensor_protocol = true,
@@ -243,6 +245,7 @@ local KoboStorm = Kobo:new{
     model = "Kobo_storm",
     hasFrontlight = yes,
     hasKeys = yes,
+    hasGSensor = yes,
     canToggleGSensor = yes,
     touch_snow_protocol = true,
     misc_ntx_gsensor_protocol = true,
@@ -257,6 +260,15 @@ local KoboStorm = Kobo:new{
         nl_max = 10,
         nl_inverted = true,
     },
+}
+
+-- Kobo Nia:
+--- @fixme: Untested, assume it's Clara-ish for now.
+local KoboLuna = Kobo:new{
+    model = "Kobo_luna",
+    hasFrontlight = yes,
+    touch_snow_protocol = true,
+    display_dpi = 212,
 }
 
 -- This function will update itself after the first touch event
@@ -824,6 +836,8 @@ elseif codename == "frost" then
     return KoboFrost
 elseif codename == "storm" then
     return KoboStorm
+elseif codename == "luna" then
+    return KoboLuna
 else
     error("unrecognized Kobo model "..codename)
 end

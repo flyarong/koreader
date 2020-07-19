@@ -63,7 +63,9 @@ local PocketBook = Generic:new{
     isTouchDevice = yes,
     hasKeys = yes,
     hasFrontlight = yes,
+    canSuspend = no,
     emu_events_dev = "/dev/shm/emu_events",
+    home_dir = "/mnt/ext1",
 }
 
 -- Make sure the C BB cannot be used on devices with a 24bpp fb
@@ -146,8 +148,8 @@ function PocketBook:init()
 
     -- fix rotation for Color Lux device
     if PocketBook:getDeviceModel() == "PocketBook Color Lux" then
-        self.screen.blitbuffer_rotation_mode = 0
-        self.screen.native_rotation_mode = 0
+        self.screen.blitbuffer_rotation_mode = self.screen.ORIENTATION_PORTRAIT
+        self.screen.native_rotation_mode = self.screen.ORIENTATION_PORTRAIT
     end
 
     os.remove(self.emu_events_dev)
@@ -226,6 +228,17 @@ local PocketBook613 = PocketBook:new{
     display_dpi = 167,
     isTouchDevice = no,
     hasWifiToggle = no,
+    hasDPad = yes,
+    hasFewKeys = yes,
+}
+
+-- PocketBook 614W Basic
+local PocketBook614W = PocketBook:new{
+    model = "PB614W",
+    display_dpi = 167,
+    isTouchDevice = no,
+    hasWifiToggle = no,
+    hasFrontlight = no,
     hasDPad = yes,
     hasFewKeys = yes,
 }
@@ -341,6 +354,8 @@ if codename == "PocketBook 515" then
     return PocketBook515
 elseif codename == "PocketBook 613" then
     return PocketBook613
+elseif codename == "PocketBook 614W" then
+    return PocketBook614W
 elseif codename == "PB616W" or
     codename == "PocketBook 616" then
     return PocketBook616

@@ -7,9 +7,9 @@ local DataStorage = require("datastorage")
 local DocSettings = require("docsettings")
 local UIManager = require("ui/uimanager")
 local Screen = require("device").screen
+local logger = require("logger")
 local util = require("ffi/util")
 local Device = require("device")
-local DEBUG = require("dbg")
 local JoplinClient = require("JoplinClient")
 local T = require("ffi/util").template
 local _ = require("gettext")
@@ -85,6 +85,7 @@ function EvernoteExporter:readyToExport()
 end
 
 function EvernoteExporter:migrateClippings()
+    if jit.os == "OSX" then return end
     local old_dir = util.joinPath(util.realpath(util.joinPath(self.path, "..")),
         "evernote.sdr")
     if lfs.attributes(old_dir, "mode") == "directory" then
@@ -136,6 +137,7 @@ function EvernoteExporter:addToMainMenu(menu_items)
             {
                 text = _("Joplin") ,
                 checked_func = function() return self.joplin_export end,
+                separator = true,
                 sub_item_table ={
                     {
                         text = _("Set Joplin IP and Port"),
@@ -287,7 +289,8 @@ For more information, please visit https://github.com/koreader/koreader/wiki/Eve
                         text = _("Exporting may take several minutes…"),
                         timeout = 1,
                     })
-                end
+                end,
+                separator = true,
             },
             {
                 text = _("Export to local JSON files"),
@@ -326,7 +329,8 @@ For more information, please visit https://github.com/koreader/koreader/wiki/Eve
                         self.joplin_export = false
                     end
                     self:saveSettings()
-                end
+                end,
+                separator = true,
             },
             {
                 text = _("Purge history records"),
@@ -377,8 +381,8 @@ function EvernoteExporter:login()
                 },
             },
         },
-        width = Screen:getWidth() * 0.8,
-        height = Screen:getHeight() * 0.4,
+        width = math.floor(Screen:getWidth() * 0.8),
+        height = math.floor(Screen:getHeight() * 0.4),
     }
 
     UIManager:show(self.login_dialog)
@@ -402,6 +406,7 @@ function EvernoteExporter:doLogin(username, password)
         domain = self.evernote_domain,
         username = username,
         password = password,
+        logger = logger.dbg,
     }
     self.evernote_username = username
     local ok, token = pcall(oauth.getToken, oauth)
@@ -483,7 +488,7 @@ function EvernoteExporter:updateHistoryClippings(clippings, new_clippings)
                     or clippings[title][chapter_index][note_index].time ~= note.time
                     or clippings[title][chapter_index][note_index].text ~= note.text
                     or clippings[title][chapter_index][note_index].note ~= note.note then
-                    DEBUG("found new notes in history", booknotes.title)
+                    logger.dbg("found new notes in history", booknotes.title)
                     clippings[title] = booknotes
                 end
             end
@@ -497,7 +502,7 @@ function EvernoteExporter:updateMyClippings(clippings, new_clippings)
     -- since appending is the only way to modify notes in My Clippings
     for title, booknotes in pairs(new_clippings) do
         if clippings[title] == nil or #clippings[title] < #booknotes then
-            DEBUG("found new notes in MyClipping", booknotes.title)
+            logger.dbg("found new notes in MyClipping", booknotes.title)
             clippings[title] = booknotes
         end
     end
@@ -536,7 +541,7 @@ function EvernoteExporter:exportAllNotes()
             clippings[title] = nil
         end
     end
-    --DEBUG("clippings", clippings)
+    --logger.dbg("clippings", clippings)
     self:exportClippings(clippings)
     self.config:saveSetting("clippings", clippings)
     self.config:flush()
@@ -603,11 +608,11 @@ function EvernoteExporter:exportClippings(clippings)
                 NetworkMgr:promptWifiOn()
                 return
             elseif not ok and err then
-                DEBUG("Error occurs when exporting book:", title, err)
+                logger.dbg("Error while exporting book", title, err)
                 error_count = error_count + 1
                 error_title = title
             elseif ok then
-                DEBUG("Exported notes in book:", title)
+                logger.dbg("Exported notes in book:", title)
                 export_count = export_count + 1
                 export_title = title
                 booknotes.exported[exported_stamp] = true
@@ -645,7 +650,7 @@ function EvernoteExporter:exportBooknotesToEvernote(client, title, booknotes)
         booknotes = booknotes,
         notemarks = self.notemarks,
     })
-    --DEBUG("content", content)
+    --logger.dbg("content", content)
     local note_guid = client:findNoteByTitle(title, self.notebook_guid)
     local resources = {}
     for _, chapter in ipairs(booknotes) do
@@ -671,7 +676,7 @@ function EvernoteExporter:exportBooknotesToHTML(title, booknotes)
         booknotes = booknotes,
         notemarks = self.notemarks,
     })
-    --DEBUG("content", content)
+    --logger.dbg("content", content)
     local html = io.open(self.clipping_dir .. "/" .. title .. ".html", "w")
     if html then
         html:write(content)

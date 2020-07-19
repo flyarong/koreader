@@ -1,5 +1,12 @@
 #!/usr/bin/env bash
 
+is_mac() {
+    if [ "$(uname -s)" != "Darwin" ]; then
+        echo "You need a mac to build this package"
+        exit 1
+    fi
+}
+
 CURDIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 VERSION=$(git describe HEAD)
 # Only append date if we're not on a whole version, like v2018.11
@@ -125,6 +132,7 @@ SUPPORTED_TARGETS="
     debian          Debian package for current arch
     debian-armel    Debian package for generic armel devices
     debian-armhf    Debian package for generic armhf devices
+    macos           MacOS app bundle. You need a mac to build this package
     emu             (*default) If no TARGET is given, assume emulator
     win32
 "
@@ -243,6 +251,11 @@ ${SUPPORTED_TARGETS}"
             make TARGET=debian-armhf
             assert_ret_zero $?
             ;;
+        macos)
+            is_mac
+            make TARGET=macos
+            assert_ret_zero $?
+            ;;
         win32)
             make TARGET=win32
             assert_ret_zero $?
@@ -334,6 +347,10 @@ ${SUPPORTED_TARGETS}"
             ;;
         debian-armhf)
             make TARGET=debian-armhf clean
+            ;;
+        macos)
+            is_mac
+            make TARGET=macos clean
             ;;
         win32)
             make TARGET=win32 clean
@@ -467,6 +484,11 @@ ${SUPPORTED_RELEASE_TARGETS}"
         debian-armhf)
             kodev-build debian-armhf
             make TARGET=debian-armhf update
+            ;;
+        macos)
+            is_mac
+            kodev-build macos
+            make TARGET=macos update
             ;;
         *)
             echo "Unsupported target for release: $1."
@@ -773,6 +795,7 @@ OPTIONS:
 
     --show-previous     show coverage stats from previous run
     --full              show full coverage report (down to each line)
+    --no-debug          no debugging symbols (default for target devices)
     "
     show_full=0
     show_previous=0
@@ -785,6 +808,10 @@ OPTIONS:
                 ;;
             --show-previous)
                 show_previous=1
+                ;;
+            --no-debug)
+                export KODEBUG=
+                KODEBUG_NO_DEFAULT=1
                 ;;
             -h | --help)
                 echo "${COV_HELP_MSG}"
@@ -799,7 +826,8 @@ OPTIONS:
         shift
     done
 
-    check_submodules && make
+    set -e
+    check_submodules && kodev-build
     setup_env
     make "${EMU_DIR}/.busted"
     pushd "${EMU_DIR}" && {
@@ -867,8 +895,9 @@ Supported commands:
     log                 Tail log stream for a running KOReader app
     release             Build KOReader release package
     run                 Run KOReader
-    test                Run tests
-    check               Run static-analysis
+    test                Run busted tests
+    check               Run luacheck static-analysis
+    cov                 Run busted tests for coverage
     wbuilder            Run wbuilder.lua script (useful for building new UI widget)
 "
 [ $# -lt 1 ] && {

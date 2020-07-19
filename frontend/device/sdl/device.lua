@@ -18,13 +18,7 @@ end
 
 -- open is the macOS counterpart
 local function hasMacOpen()
-    local std_out = io.popen("open")
-    local all = nil
-    if std_out ~= nil then
-        all = std_out:read()
-        std_out:close()
-    end
-    return all ~= nil
+    return os.execute("open >/dev/null 2>&1") == 256
 end
 
 -- get the name of the binary used to open links
@@ -72,6 +66,7 @@ end
 local Device = Generic:new{
     model = "SDL",
     isSDL = yes,
+    home_dir = os.getenv("HOME"),
     hasKeyboard = yes,
     hasKeys = yes,
     hasDPad = yes,
@@ -80,11 +75,16 @@ local Device = Generic:new{
     needsScreenRefreshAfterResume = no,
     hasColorScreen = yes,
     hasEinkScreen = no,
+    canSuspend = no,
     canOpenLink = getLinkOpener,
     openLink = function(self, link)
         local enabled, tool = getLinkOpener()
         if not enabled or not tool or not link or type(link) ~= "string" then return end
-        return os.execute('env -u LD_LIBRARY_PATH '..tool.." '"..link.."'") == 0
+        if jit.os == "OSX" then
+            return os.execute(tool .. " '" .. link .. "'") == 0
+        else
+            return os.execute('env -u LD_LIBRARY_PATH '..tool.." '"..link.."'") == 0
+        end
     end,
     canExternalDictLookup = yes,
     getExternalDictLookupList = getExternalDicts,
@@ -123,6 +123,9 @@ local Emulator = Device:new{
     hasFrontlight = yes,
     hasWifiToggle = yes,
     hasWifiManager = yes,
+    canPowerOff = yes,
+    canReboot = yes,
+    canSuspend = yes,
 }
 
 local Linux = Device:new{
@@ -130,9 +133,15 @@ local Linux = Device:new{
     isDesktop = yes,
 }
 
+local Mac = Device:new{
+    model = "Mac",
+    isDesktop = yes,
+}
+
 local UbuntuTouch = Device:new{
     model = "UbuntuTouch",
     hasFrontlight = yes,
+    home_dir = nil,
 }
 
 function Device:init()
@@ -323,11 +332,38 @@ function Device:simulateResume()
     })
 end
 
+-- fake network manager for the emulator
+function Emulator:initNetworkManager(NetworkMgr)
+    local UIManager = require("ui/uimanager")
+    local connectionChangedEvent = function()
+        if G_reader_settings:nilOrTrue("emulator_fake_wifi_connected") then
+            UIManager:broadcastEvent(Event:new("NetworkConnected"))
+        else
+            UIManager:broadcastEvent(Event:new("NetworkDisconnected"))
+        end
+    end
+    function NetworkMgr:turnOffWifi(complete_callback)
+        G_reader_settings:flipNilOrTrue("emulator_fake_wifi_connected")
+        UIManager:scheduleIn(2, connectionChangedEvent)
+    end
+    function NetworkMgr:turnOnWifi(complete_callback)
+        G_reader_settings:flipNilOrTrue("emulator_fake_wifi_connected")
+        UIManager:scheduleIn(2, connectionChangedEvent)
+    end
+    function NetworkMgr:isWifiOn()
+        return G_reader_settings:nilOrTrue("emulator_fake_wifi_connected")
+    end
+end
+
 -------------- device probe ------------
 if os.getenv("APPIMAGE") then
     return AppImage
 elseif os.getenv("KO_MULTIUSER") then
-    return Linux
+    if jit.os == "OSX" then
+        return Mac
+    else
+        return Linux
+    end
 elseif os.getenv("UBUNTU_APPLICATION_ISOLATION") then
     return UbuntuTouch
 else

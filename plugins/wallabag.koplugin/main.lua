@@ -21,11 +21,9 @@ local UIManager = require("ui/uimanager")
 local WidgetContainer = require("ui/widget/container/widgetcontainer")
 local filemanagerutil = require("apps/filemanager/filemanagerutil")
 local http = require("socket.http")
-local https = require("ssl.https")
 local logger = require("logger")
 local ltn12 = require("ltn12")
 local socket = require("socket")
-local url = require("socket.url")
 local util = require("util")
 local _ = require("gettext")
 local T = FFIUtil.template
@@ -146,6 +144,7 @@ function Wallabag:addToMainMenu(menu_items)
                 callback_func = function()
                     return nil
                 end,
+                separator = true,
                 sub_item_table = {
                     {
                         text = _("Configure Wallabag server"),
@@ -175,6 +174,7 @@ function Wallabag:addToMainMenu(menu_items)
                         callback = function(touchmenu_instance)
                             self:setDownloadDirectory(touchmenu_instance)
                         end,
+                        separator = true,
                     },
                     {
                         text_func = function()
@@ -202,46 +202,55 @@ function Wallabag:addToMainMenu(menu_items)
                         callback = function(touchmenu_instance)
                             self:setIgnoreTags(touchmenu_instance)
                         end,
+                        separator = true,
                     },
                     {
-                        text = _("Remotely delete finished articles"),
-                        checked_func = function() return self.is_delete_finished end,
-                        callback = function()
-                            self.is_delete_finished = not self.is_delete_finished
-                            self:saveSettings()
-                        end,
-                    },
-                    {
-                        text = _("Remotely delete 100% read articles"),
-                        checked_func = function() return self.is_delete_read end,
-                        callback = function()
-                            self.is_delete_read = not self.is_delete_read
-                            self:saveSettings()
-                        end,
-                    },
-                    {
-                        text = _("Mark as read instead of deleting"),
-                        checked_func = function() return self.is_archiving_deleted end,
-                        callback = function()
-                            self.is_archiving_deleted = not self.is_archiving_deleted
-                            self:saveSettings()
-                        end,
-                    },
-                    {
-                        text = _("Process deletions when downloading"),
-                        checked_func = function() return self.is_auto_delete end,
-                        callback = function()
-                            self.is_auto_delete = not self.is_auto_delete
-                            self:saveSettings()
-                        end,
-                    },
-                    {
-                        text = _("Synchronize remotely deleted files"),
-                        checked_func = function() return self.is_sync_remote_delete end,
-                        callback = function()
-                            self.is_sync_remote_delete = not self.is_sync_remote_delete
-                            self:saveSettings()
-                        end,
+                        text = _("Article deletion"),
+                        separator = true,
+                        sub_item_table = {
+                            {
+                                text = _("Remotely delete finished articles"),
+                                checked_func = function() return self.is_delete_finished end,
+                                callback = function()
+                                    self.is_delete_finished = not self.is_delete_finished
+                                    self:saveSettings()
+                                end,
+                            },
+                            {
+                                text = _("Remotely delete 100% read articles"),
+                                checked_func = function() return self.is_delete_read end,
+                                callback = function()
+                                    self.is_delete_read = not self.is_delete_read
+                                    self:saveSettings()
+                                end,
+                                separator = true,
+                            },
+                            {
+                                text = _("Mark as read instead of deleting"),
+                                checked_func = function() return self.is_archiving_deleted end,
+                                callback = function()
+                                    self.is_archiving_deleted = not self.is_archiving_deleted
+                                    self:saveSettings()
+                                end,
+                                separator = true,
+                            },
+                            {
+                                text = _("Process deletions when downloading"),
+                                checked_func = function() return self.is_auto_delete end,
+                                callback = function()
+                                    self.is_auto_delete = not self.is_auto_delete
+                                    self:saveSettings()
+                                end,
+                            },
+                            {
+                                text = _("Synchronize remotely deleted files"),
+                                checked_func = function() return self.is_sync_remote_delete end,
+                                callback = function()
+                                    self.is_sync_remote_delete = not self.is_sync_remote_delete
+                                    self:saveSettings()
+                                end,
+                            },
+                        },
                     },
                     {
                         text = _("Remove finished articles from history"),
@@ -253,6 +262,18 @@ function Wallabag:addToMainMenu(menu_items)
                             self.remove_finished_from_history = not self.remove_finished_from_history
                             self:saveSettings()
                         end,
+                    },
+                    {
+                        text = _("Remove 100% read articles from history"),
+                        keep_menu_open = true,
+                        checked_func = function()
+                            return self.remove_read_from_history or false
+                        end,
+                        callback = function()
+                            self.remove_read_from_history = not self.remove_read_from_history
+                            self:saveSettings()
+                        end,
+                        separator = true,
                     },
                     {
                         text = _("Help"),
@@ -506,12 +527,10 @@ end
 ---- @todo separate call to internal API from the download on external server
 function Wallabag:callAPI(method, apiurl, headers, body, filepath, quiet)
     local request, sink = {}, {}
-    local parsed
 
     -- Is it an API call, or a regular file direct download?
     if apiurl:sub(1, 1) == "/" then
         -- API call to our server, has the form "/random/api/call"
-        parsed = url.parse(self.server_url)
         request.url = self.server_url .. apiurl
         if headers == nil then
             headers = { ["Authorization"] = "Bearer " .. self.access_token, }
@@ -519,7 +538,6 @@ function Wallabag:callAPI(method, apiurl, headers, body, filepath, quiet)
     else
         -- regular url link to a foreign server
         local file_url = apiurl
-        parsed = url.parse(file_url)
         request.url = file_url
         if headers == nil then
             headers = {} -- no need for a token here
@@ -539,8 +557,8 @@ function Wallabag:callAPI(method, apiurl, headers, body, filepath, quiet)
     logger.dbg("Wallabag: URL     ", request.url)
     logger.dbg("Wallabag: method  ", method)
 
-    http.TIMEOUT, https.TIMEOUT = 30, 30
-    local httpRequest = parsed.scheme == "http" and http.request or https.request
+    http.TIMEOUT = 30
+    local httpRequest = http.request
     local code, resp_headers = socket.skip(1, httpRequest(request))
     -- raise error message when network is unavailable
     if resp_headers == nil then
@@ -936,8 +954,8 @@ Restart KOReader after editing the config file.]]), BD.dirpath(DataStorage:getSe
                 },
             },
         },
-        width = Screen:getWidth() * 0.95,
-        height = Screen:getHeight() * 0.2,
+        width = math.floor(Screen:getWidth() * 0.95),
+        height = math.floor(Screen:getHeight() * 0.2),
         input_type = "string",
     }
     UIManager:show(self.settings_dialog)
@@ -976,8 +994,8 @@ function Wallabag:editClientSettings()
                 },
             },
         },
-        width = Screen:getWidth() * 0.95,
-        height = Screen:getHeight() * 0.2,
+        width = math.floor(Screen:getWidth() * 0.95),
+        height = math.floor(Screen:getHeight() * 0.2),
         input_type = "string",
     }
     UIManager:show(self.client_settings_dialog)
@@ -1012,6 +1030,7 @@ function Wallabag:saveSettings()
         is_sync_remote_delete = self.is_sync_remote_delete,
         articles_per_sync     = self.articles_per_sync,
         remove_finished_from_history = self.remove_finished_from_history,
+        remove_read_from_history = self.remove_read_from_history,
         download_queue        = self.download_queue,
     }
     self.wb_settings:saveSetting("wallabag", tempsettings)
@@ -1084,9 +1103,19 @@ function Wallabag:addToDownloadQueue(article_url)
 end
 
 function Wallabag:onCloseDocument()
-    if self.remove_finished_from_history then
+    if self.remove_finished_from_history or self.remove_read_from_history then
         local document_full_path = self.ui.document.file
-        if document_full_path and self.directory and self:getLastPercent() == 1 and self.directory == string.sub(document_full_path, 1, string.len(self.directory)) then
+        local is_finished
+        if self.ui.status.settings.data.summary and self.ui.status.settings.data.summary.status then
+            local status = self.ui.status.settings.data.summary.status
+            is_finished = (status == "complete" or status == "abandoned")
+        end
+        local is_read = self:getLastPercent() == 1
+
+        if document_full_path
+           and self.directory
+           and ( (self.remove_finished_from_history and is_finished) or (self.remove_read_from_history and is_read) )
+           and self.directory == string.sub(document_full_path, 1, string.len(self.directory)) then
             ReadHistory:removeItemByPath(document_full_path)
             self.ui:setLastDirForFileBrowser(self.directory)
         end
