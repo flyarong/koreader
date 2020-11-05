@@ -1,23 +1,25 @@
 local ConfirmBox = require("ui/widget/confirmbox")
 local DataStorage = require("datastorage")
 local Dispatcher = require("dispatcher")
+local FFIUtil = require("ffi/util")
 local InfoMessage = require("ui/widget/infomessage")
 local InputDialog = require("ui/widget/inputdialog")
 local LuaSettings = require("luasettings")
 local UIManager = require("ui/uimanager")
 local WidgetContainer = require("ui/widget/container/widgetcontainer")
-local orderedPairs = require("ffi/util").orderedPairs
 local _ = require("gettext")
-local T = require("ffi/util").template
+local T = FFIUtil.template
 
 local Profiles = WidgetContainer:new{
     name = "profiles",
     profiles_file = DataStorage:getSettingsDir() .. "/profiles.lua",
     profiles = nil,
     data = nil,
+    updated = false,
 }
 
 function Profiles:init()
+    Dispatcher:init()
     self.ui.menu:registerToMainMenu(self)
 end
 
@@ -30,8 +32,9 @@ function Profiles:loadProfiles()
 end
 
 function Profiles:onFlushSettings()
-    if self.profiles then
+    if self.profiles and self.updated then
         self.profiles:flush()
+        self.updated = false
     end
 end
 
@@ -86,7 +89,7 @@ function Profiles:getSubMenuItems()
             separator = true,
         }
     }
-    for k,v in orderedPairs(self.data) do
+    for k,v in FFIUtil.orderedPairs(self.data) do
         local sub_items = {
             {
                 text = _("Delete profile"),
@@ -104,13 +107,13 @@ function Profiles:getSubMenuItems()
                 end,
             }
         }
-        Dispatcher.addSubMenu(self, sub_items, "data", k)
+        Dispatcher:addSubMenu(self, sub_items, self.data, k)
         table.insert(sub_item_table, {
             text = k,
             hold_keep_menu_open = false,
             sub_item_table = sub_items,
             hold_callback = function()
-                Dispatcher.execute(self, self.data[k])
+                Dispatcher:execute(self.ui, self.data[k])
             end,
         })
     end
@@ -120,6 +123,7 @@ end
 function Profiles:newProfile(name)
     if self.data[name] == nil then
         self.data[name] = {}
+        self.updated = true
         return true
     else
         return false
@@ -128,6 +132,7 @@ end
 
 function Profiles:deleteProfile(name)
     self.data[name] = nil
+    self.updated = true
 end
 
 return Profiles

@@ -2,6 +2,8 @@ local BD = require("ui/bidi")
 local Blitbuffer = require("ffi/blitbuffer")
 local BottomContainer = require("ui/widget/container/bottomcontainer")
 local Button = require("ui/widget/button")
+local CenterContainer = require("ui/widget/container/centercontainer")
+local CheckMark = require("ui/widget/checkmark")
 local CloseButton = require("ui/widget/closebutton")
 local Device = require("device")
 local Font = require("ui/font")
@@ -10,7 +12,6 @@ local Geom = require("ui/geometry")
 local GestureRange = require("ui/gesturerange")
 local HorizontalGroup = require("ui/widget/horizontalgroup")
 local InputContainer = require("ui/widget/container/inputcontainer")
-local LeftContainer = require("ui/widget/container/leftcontainer")
 local LineWidget = require("ui/widget/linewidget")
 local OverlapGroup = require("ui/widget/overlapgroup")
 local Size = require("ui/size")
@@ -90,9 +91,8 @@ end
 
 
 local SortItemWidget = InputContainer:new{
-    key = nil,
-    cface = Font:getFace("smallinfofont"),
-    tface = Font:getFace("smallinfofontbold"),
+    item = nil,
+    face = Font:getFace("smallinfofont"),
     width = nil,
     height = nil,
 }
@@ -114,29 +114,48 @@ function SortItemWidget:init()
         }
     end
 
-    local frame_padding = Size.padding.default
-    local frame_internal_width = self.width - frame_padding * 2
+    local item_checkable = false
+    local item_checked = self.item.checked
+    if self.item.checked_func then
+        item_checkable = true
+        item_checked = self.item.checked_func()
+    end
+    self.checkmark_widget = CheckMark:new{
+        checkable = item_checkable,
+        checked = item_checked,
+    }
+
+    local checked_widget = CheckMark:new{ -- for layout, to :getSize()
+        checked = true,
+    }
+
+    local text_max_width = self.width - 2*Size.padding.default - checked_widget:getSize().w
 
     self[1] = FrameContainer:new{
         padding = 0,
         bordersize = 0,
-        LeftContainer:new{
-            dimen = {
-                w = frame_internal_width,
-                h = self.height
+        HorizontalGroup:new {
+            align = "center",
+            CenterContainer:new{
+                dimen = Geom:new{ w = checked_widget:getSize().w },
+                self.checkmark_widget,
             },
             TextWidget:new{
-                text = self.text,
-                max_width = frame_internal_width,
-                face = self.tface,
-            }
+                text = self.item.text,
+                max_width = text_max_width,
+                face = self.face,
+            },
         },
     }
     self[1].invert = self.invert
 end
 
-function SortItemWidget:onTap()
-    if self.show_parent.marked == self.index then
+function SortItemWidget:onTap(_, ges)
+    if self.item.checked_func and ges.pos:intersectWith(self.checkmark_widget.dimen) then
+        if self.item.callback then
+            self.item:callback()
+        end
+    elseif self.show_parent.marked == self.index then
         self.show_parent.marked = 0
     else
         self.show_parent.marked = self.index
@@ -146,6 +165,10 @@ function SortItemWidget:onTap()
 end
 
 function SortItemWidget:onHold()
+    if self.item.callback then
+        self.item:callback()
+        self.show_parent:_populateItems()
+    end
     return true
 end
 
@@ -168,6 +191,13 @@ function SortWidget:init()
         w = self.width or Screen:getWidth(),
         h = self.height or Screen:getHeight(),
     }
+    if Device:hasKeys() then
+        self.key_events = {
+            --don't get locked in on non touch devices
+            AnyKeyPressed = { { Device.input.group.Any },
+                seqtext = "any key", doc = "close dialog" }
+        }
+    end
     if Device:isTouchDevice() then
         self.ges_events.Swipe = {
             GestureRange:new{
@@ -386,8 +416,9 @@ end
 function SortWidget:moveItem(diff)
     local move_to = self.marked + diff
     if move_to > 0 and move_to <= #self.item_table then
+        table.insert(self.item_table, move_to, table.remove(self.item_table, self.marked))
         self.show_page = math.ceil(move_to/self.items_per_page)
-        self:swapItems(self.marked, move_to)
+        self.marked = move_to
         self:_populateItems()
     end
 end
@@ -414,8 +445,7 @@ function SortWidget:_populateItems()
             SortItemWidget:new{
                 height = self.item_height,
                 width = self.item_width,
-                text = self.item_table[idx].text,
-                label = self.item_table[idx].label,
+                item = self.item_table[idx],
                 invert = invert_status,
                 index = idx,
                 show_parent = self,
@@ -446,13 +476,8 @@ function SortWidget:_populateItems()
     end)
 end
 
-function SortWidget:swapItems(pos1, pos2)
-    if pos1 > 0 or pos2 <= #self.item_table then
-        local entry = self.item_table[pos1]
-        self.marked = pos2
-        self.item_table[pos1] = self.item_table[pos2]
-        self.item_table[pos2] = entry
-    end
+function SortWidget:onAnyKeyPressed()
+    return self:onClose()
 end
 
 function SortWidget:onNextPage()

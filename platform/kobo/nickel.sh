@@ -11,7 +11,7 @@ export LD_LIBRARY_PATH="/usr/local/Kobo"
 cd /
 unset OLDPWD
 unset LC_ALL TESSDATA_PREFIX STARDICT_DATA_DIR EXT_FONT_DIR
-unset KO_NO_CBB
+unset KOREADER_DIR KO_NO_CBB KO_DONT_GRAB_INPUT
 
 # Ensures fmon will restart. Note that we don't have to worry about reaping this, nickel kills on-animator.sh on start.
 (
@@ -21,10 +21,39 @@ unset KO_NO_CBB
     /etc/init.d/on-animator.sh
 ) &
 
-# Make sure we kill the WiFi first, because nickel apparently doesn't like it if it's up... (cf. #1520)
+# Make sure we kill the Wi-Fi first, because nickel apparently doesn't like it if it's up... (cf. #1520)
 # NOTE: That check is possibly wrong on PLATFORM == freescale (because I don't know if the sdio_wifi_pwr module exists there), but we don't terribly care about that.
 if lsmod | grep -q sdio_wifi_pwr; then
-    killall restore-wifi-async.sh enable-wifi.sh obtain-ip.sh udhcpc default.script wpa_supplicant 2>/dev/null
+    killall -q -TERM restore-wifi-async.sh enable-wifi.sh obtain-ip.sh
+    cp -a "/etc/resolv.conf" "/tmp/resolv.ko"
+    old_hash="$(md5sum "/etc/resolv.conf" | cut -f1 -d' ')"
+    if [ -x "/sbin/dhcpcd" ]; then
+        env -u LD_LIBRARY_PATH dhcpcd -d -k "${INTERFACE}"
+        killall -q -TERM udhcpc default.script
+    else
+        killall -q -TERM udhcpc default.script dhcpcd
+    fi
+    # NOTE: dhcpcd -k waits for the signalled process to die, but busybox's killall doesn't have a -w, --wait flag,
+    #       so we have to wait for udhcpc to die ourselves...
+    # NOTE: But if all is well, there *isn't* any udhcpc process or script left to begin with...
+    kill_timeout=0
+    while pkill -0 udhcpc; do
+        # Stop waiting after 5s
+        if [ ${kill_timeout} -ge 20 ]; then
+            break
+        fi
+        usleep 250000
+        kill_timeout=$((kill_timeout + 1))
+    done
+
+    new_hash="$(md5sum "/etc/resolv.conf" | cut -f1 -d' ')"
+    # Restore our network-specific resolv.conf if the DHCP client wiped it when releasing the lease...
+    if [ "${new_hash}" != "${old_hash}" ]; then
+        mv -f "/tmp/resolv.ko" "/etc/resolv.conf"
+    else
+        rm -f "/tmp/resolv.ko"
+    fi
+    wpa_cli terminate
     [ "${WIFI_MODULE}" != "8189fs" ] && [ "${WIFI_MODULE}" != "8192es" ] && wlarm_le -i "${INTERFACE}" down
     ifconfig "${INTERFACE}" down
     # NOTE: Kobo's busybox build is weird. rmmod appears to be modprobe in disguise, defaulting to the -r flag...
@@ -37,19 +66,27 @@ if lsmod | grep -q sdio_wifi_pwr; then
     rmmod sdio_wifi_pwr
 fi
 
+# Recreate Nickel's FIFO ourselves, like rcS does, because udev *will* write to it!
+# Plus, we actually *do* want the stuff udev writes in there to be processed by Nickel, anyway.
+rm -f "/tmp/nickel-hardware-status"
+mkfifo "/tmp/nickel-hardware-status"
+
 # Flush buffers to disk, who knows.
 sync
 
+# Handle the sdcard:
+# We need to unmount it ourselves, or Nickel wigs out and shows an "unrecognized FS" popup until the next fake sd add event.
+# The following udev trigger should then ensure there's a single sd add event enqueued in the FIFO for it to process,
+# ensuring it gets sanely detected and remounted RO.
+if [ -e "/dev/mmcblk1p1" ]; then
+    umount /mnt/sd
+fi
+
 # And finally, simply restart nickel.
 # We don't care about horribly legacy stuff, because if people switch between nickel and KOReader in the first place, I assume they're using a decently recent enough FW version.
-# Last tested on an H2O & a Forma running FW 4.7.x - 4.12.x
+# Last tested on an H2O & a Forma running FW 4.7.x - 4.24.x
 /usr/local/Kobo/hindenburg &
 LIBC_FATAL_STDERR_=1 /usr/local/Kobo/nickel -platform kobo -skipFontLoad &
-udevadm trigger &
-
-# Handle sdcard
-if [ -e "/dev/mmcblk1p1" ]; then
-    echo sd add /dev/mmcblk1p1 >>/tmp/nickel-hardware-status &
-fi
+[ "${PLATFORM}" != "freescale" ] && udevadm trigger &
 
 return 0

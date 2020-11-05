@@ -19,6 +19,7 @@ local UIManager = require("ui/uimanager")
 local VerticalGroup = require("ui/widget/verticalgroup")
 local VerticalSpan = require("ui/widget/verticalspan")
 local WidgetContainer = require("ui/widget/container/widgetcontainer")
+local logger = require("logger")
 local util = require("util")
 local T = require("ffi/util").template
 local _ = require("gettext")
@@ -39,6 +40,7 @@ local MODE = {
     wifi_status = 10,
     book_title = 11,
     book_chapter = 12,
+    bookmark_count = 13,
 }
 
 local symbol_prefix = {
@@ -47,6 +49,8 @@ local symbol_prefix = {
         pages_left = "=>",
         -- @translators This is the footer letter prefix for battery % remaining.
         battery = C_("FooterLetterPrefix", "B:"),
+        -- @translators This is the footer letter prefix for the number of bookmarks (bookmark count).
+        bookmark_count = C_("FooterLetterPrefix", "BM:"),
         -- @translators This is the footer letter prefix for percentage read.
         percentage = C_("FooterLetterPrefix", "R:"),
         -- @translators This is the footer letter prefix for book time to read.
@@ -57,19 +61,21 @@ local symbol_prefix = {
         frontlight = C_("FooterLetterPrefix", "L:"),
         -- @translators This is the footer letter prefix for memory usage.
         mem_usage = C_("FooterLetterPrefix", "M:"),
-        -- @translators This is the footer letter prefix for wifi status.
+        -- @translators This is the footer letter prefix for Wi-Fi status.
         wifi_status = C_("FooterLetterPrefix", "W:"),
     },
     icons = {
         time = "⌚",
         pages_left = BD.mirroredUILayout() and "⇐" or "⇒",
         battery = "",
+        bookmark_count = "☆",
         percentage = BD.mirroredUILayout() and "⤟" or "⤠",
         book_time_to_read = "⏳",
         chapter_time_to_read = BD.mirroredUILayout() and "⥖" or "⤻",
         frontlight = "☼",
         mem_usage = "",
         wifi_status = "",
+        wifi_status_off = "",
     }
 }
 if BD.mirroredUILayout() then
@@ -113,7 +119,11 @@ local footerTextGeneratorMap = {
                 return (prefix .. " %d"):format(powerd:frontlightIntensity())
             end
         else
-            return T(_("%1 Off"), prefix)
+            if footer.settings.hide_empty_generators then
+                return ""
+            else
+                return T(_("%1 Off"), prefix)
+            end
         end
     end,
     battery = function(footer)
@@ -155,22 +165,19 @@ local footerTextGeneratorMap = {
             return BD.wrap(prefix) .. " " .. (powerd:isCharging() and "+" or "") .. batt_lvl .. "%"
         end
     end,
+    bookmark_count = function(footer)
+        local symbol_type = footer.settings.item_prefix or "icons"
+        local prefix = symbol_prefix[symbol_type].bookmark_count
+        local bookmark_count = footer.ui.bookmark:getNumberOfBookmarks()
+        if footer.settings.hide_empty_generators and bookmark_count == 0 then
+            return ""
+        end
+        return prefix .. " " .. tostring(bookmark_count)
+    end,
     time = function(footer)
         local symbol_type = footer.settings.item_prefix or "icons"
         local prefix = symbol_prefix[symbol_type].time
-        local clock
-        if footer.settings.time_format == "12" then
-            if os.date("%p") == "AM" then
-                -- @translators This is the time in the morning in the 12-hour clock (%I is the hour, %M the minute).
-                clock = os.date(_("%I:%M AM"))
-            else
-                -- @translators This is the time in the afternoon in the 12-hour clock (%I is the hour, %M the minute).
-                clock = os.date(_("%I:%M PM"))
-            end
-        else
-            -- @translators This is the time in the 24-hour clock (%H is the hour, %M the minute).
-            clock = os.date(_("%H:%M"))
-        end
+        local clock = util.secondsToHour(os.time(), footer.settings.time_format == "12")
         if not prefix then
             return clock
         else
@@ -192,8 +199,7 @@ local footerTextGeneratorMap = {
     pages_left = function(footer)
         local symbol_type = footer.settings.item_prefix or "icons"
         local prefix = symbol_prefix[symbol_type].pages_left
-        local left = footer.ui.toc:getChapterPagesLeft(
-            footer.pageno, footer.toc_level)
+        local left = footer.ui.toc:getChapterPagesLeft(footer.pageno)
         return prefix .. " " .. (left and left or footer.pages - footer.pageno)
     end,
     percentage = function(footer)
@@ -217,8 +223,7 @@ local footerTextGeneratorMap = {
     chapter_time_to_read = function(footer)
         local symbol_type = footer.settings.item_prefix or "icons"
         local prefix = symbol_prefix[symbol_type].chapter_time_to_read
-        local left = footer.ui.toc:getChapterPagesLeft(
-            footer.pageno, footer.toc_level)
+        local left = footer.ui.toc:getChapterPagesLeft(footer.pageno)
         return footer:getDataFromStatistics(
             prefix .. " ", (left and left or footer.pages - footer.pageno))
     end,
@@ -237,13 +242,30 @@ local footerTextGeneratorMap = {
         return ""
     end,
     wifi_status = function(footer)
+        -- NOTE: This one deviates a bit from the mold because, in icons mode, we simply use two different icons and no text.
         local symbol_type = footer.settings.item_prefix or "icons"
-        local prefix = symbol_prefix[symbol_type].wifi_status
         local NetworkMgr = require("ui/network/manager")
-        if NetworkMgr:isWifiOn() then
-            return T(_("%1 On"), prefix)
+        if symbol_type == "icons" then
+            if NetworkMgr:isWifiOn() then
+                return symbol_prefix.icons.wifi_status
+            else
+                if footer.settings.hide_empty_generators then
+                    return ""
+                else
+                    return symbol_prefix.icons.wifi_status_off
+                end
+            end
         else
-            return T(_("%1 Off"), prefix)
+            local prefix = symbol_prefix[symbol_type].wifi_status
+            if NetworkMgr:isWifiOn() then
+                return T(_("%1 On"), prefix)
+            else
+                if footer.settings.hide_empty_generators then
+                    return ""
+                else
+                    return T(_("%1 Off"), prefix)
+                end
+            end
         end
     end,
     book_title = function(footer)
@@ -262,7 +284,7 @@ local footerTextGeneratorMap = {
             end
             return BD.auto(fitted_title_text)
         else
-            return
+            return ""
         end
     end,
     book_chapter = function(footer)
@@ -281,7 +303,7 @@ local footerTextGeneratorMap = {
             end
             return BD.auto(fitted_chapter_text)
         else
-            return
+            return ""
         end
     end
 }
@@ -290,7 +312,6 @@ local ReaderFooter = WidgetContainer:extend{
     mode = MODE.page_progress,
     pageno = nil,
     pages = nil,
-    toc_level = 0,
     progress_percentage = 0.0,
     footer_text = nil,
     text_font_face = "ffont",
@@ -311,7 +332,8 @@ function ReaderFooter:init()
         all_at_once = false,
         reclaim_height = false,
         toc_markers = true,
-        battery = not Device:isDesktop(),
+        battery = Device:hasBattery(),
+        bookmark_count = true,
         time = true,
         page_progress = true,
         pages_left = true,
@@ -332,13 +354,13 @@ function ReaderFooter:init()
     }
 
     -- Remove items not supported by the current device
-    if not Device:isAndroid() then
+    if not Device:hasFastWifiStatusQuery() then
         MODE.wifi_status = nil
     end
     if not Device:hasFrontlight() then
         MODE.frontlight = nil
     end
-    if Device:isDesktop() then
+    if not Device:hasBattery() then
         MODE.battery = nil
     end
 
@@ -439,6 +461,7 @@ function ReaderFooter:init()
     }
     -- all width related values will be initialized in self:resetLayout()
     self.text_width = 0
+    self.footer_text.height = 0
     self.progress_bar = ProgressWidget:new{
         width = nil,
         height = nil,
@@ -469,8 +492,10 @@ function ReaderFooter:init()
         self.view.footer_visible = (self.mode ~= self.mode_list.off)
         self:updateFooterTextGenerator()
         if self.settings.progress_bar_position and self.has_no_mode then
-            self.footer_container.dimen.h = 0
             self.footer_text.height = 0
+            if self.settings.disable_progress_bar then
+                self.footer_container.dimen.h = 0
+            end
         end
     else
         self:applyFooterMode()
@@ -478,6 +503,8 @@ function ReaderFooter:init()
     if self.settings.auto_refresh_time then
         self:setupAutoRefreshTime()
     end
+
+    self.visibility_change = nil
 end
 
 function ReaderFooter:updateFooterContainer()
@@ -557,7 +584,17 @@ end
 function ReaderFooter:setupAutoRefreshTime()
     if not self.autoRefreshTime then
         self.autoRefreshTime = function()
-            self:onUpdateFooter(true)
+            -- Only actually repaint the footer if nothing's being shown over ReaderUI (#6616)
+            if UIManager:getTopWidget() == "ReaderUI" then
+                -- And that only if it's actually visible
+                if self.view.footer_visible then
+                    self:onUpdateFooter(true)
+                end
+            else
+                logger.dbg("Skipping ReaderFooter repaint, because ReaderUI is not the top-level widget")
+                -- NOTE: We *do* keep its content up-to-date, though
+                self:onUpdateFooter()
+            end
             UIManager:scheduleIn(61 - tonumber(os.date("%S")), self.autoRefreshTime)
         end
     end
@@ -637,6 +674,8 @@ end
 
 function ReaderFooter:getHeight()
     if self.footer_content then
+        -- NOTE: self.footer_content is self.vertical_frame + self.bottom_padding,
+        --       self.vertical_frame includes self.text_container (which includes self.footer_text)
         return self.footer_content:getSize().h
     else
         return 0
@@ -676,9 +715,12 @@ function ReaderFooter:updateFooterTextGenerator()
         -- function to that one
         self.genFooterText = footerTextGenerators[1]
     else
-        self.footerTextGenerators = footerTextGenerators
         self.genFooterText = self.genAllFooterText
     end
+
+    -- Even if there's no or a single mode enabled, all_at_once requires this to be set
+     self.footerTextGenerators = footerTextGenerators
+
     -- notify caller that UI needs update
     return true
 end
@@ -701,6 +743,7 @@ function ReaderFooter:textOptionTitles(option)
     local option_titles = {
         all_at_once = _("Show all at once"),
         reclaim_height = _("Reclaim bar height from bottom margin"),
+        bookmark_count = T(_("Bookmark count (%1)"), symbol_prefix[symbol].bookmark_count),
         page_progress = T(_("Current page (%1)"), "/"),
         time = symbol_prefix[symbol].time
             and T(_("Current time (%1)"), symbol_prefix[symbol].time) or _("Current time"),
@@ -772,7 +815,9 @@ function ReaderFooter:addToMainMenu(menu_items)
                 self.reclaim_height = self.settings.reclaim_height or false
                 -- refresh margins position
                 if self.has_no_mode then
-                    self.footer_container.dimen.h = 0
+                    if self.settings.disable_progress_bar then
+                        self.footer_container.dimen.h = 0
+                    end
                     self.footer_text.height = 0
                     should_signal = true
                     self.genFooterText = footerTextGeneratorMap.empty
@@ -873,6 +918,17 @@ function ReaderFooter:addToMainMenu(menu_items)
                 end,
                 callback = function()
                     self.settings.bottom_horizontal_separator = not self.settings.bottom_horizontal_separator
+                    self:refreshFooter(true, true)
+                end,
+            },
+            {
+                text = _("Hide empty items"),
+                help_text = _([[This will hide values like 0 or off.]]),
+                checked_func = function()
+                    return self.settings.hide_empty_generators
+                end,
+                callback = function()
+                    self.settings.hide_empty_generators = not self.settings.hide_empty_generators
                     self:refreshFooter(true, true)
                 end,
             },
@@ -1609,9 +1665,10 @@ function ReaderFooter:addToMainMenu(menu_items)
     table.insert(sub_items, getMinibarOption("page_progress"))
     table.insert(sub_items, getMinibarOption("time"))
     table.insert(sub_items, getMinibarOption("pages_left"))
-    if not Device:isDesktop() then
+    if Device:hasBattery() then
         table.insert(sub_items, getMinibarOption("battery"))
     end
+    table.insert(sub_items, getMinibarOption("bookmark_count"))
     table.insert(sub_items, getMinibarOption("percentage"))
     table.insert(sub_items, getMinibarOption("book_time_to_read"))
     table.insert(sub_items, getMinibarOption("chapter_time_to_read"))
@@ -1619,7 +1676,7 @@ function ReaderFooter:addToMainMenu(menu_items)
         table.insert(sub_items, getMinibarOption("frontlight"))
     end
     table.insert(sub_items, getMinibarOption("mem_usage"))
-    if Device:isAndroid() then
+    if Device:hasFastWifiStatusQuery() then
         table.insert(sub_items, getMinibarOption("wifi_status"))
     end
     table.insert(sub_items, getMinibarOption("book_title"))
@@ -1641,7 +1698,11 @@ function ReaderFooter:genAllFooterText()
     -- sure they are laid out in our order (reversed in RTL),
     -- without ordering by the RTL Bidi algorithm.
     for _, gen in ipairs(self.footerTextGenerators) do
-        table.insert(info, BD.wrap(gen(self)))
+        -- Skip empty generators, so they don't generate bogus separators
+        local text = gen(self)
+        if text and text ~= "" then
+            table.insert(info, BD.wrap(text))
+        end
     end
     return table.concat(info, BD.wrap(separator))
 end
@@ -1659,7 +1720,7 @@ function ReaderFooter:setTocMarkers(reset)
         end
         self.progress_bar.ticks = {}
         if self.ui.toc then
-            self.progress_bar.ticks = self.ui.toc:getTocTicksForFooter()
+            self.progress_bar.ticks = self.ui.toc:getTocTicksFlattened()
         end
         self.progress_bar.last = self.pages or self.view.document:getPageCount()
     else
@@ -1674,7 +1735,7 @@ function ReaderFooter:getAvgTimePerPage()
 end
 
 function ReaderFooter:getDataFromStatistics(title, pages)
-    local sec = 'na'
+    local sec = "N/A"
     local average_time_per_page = self:getAvgTimePerPage()
     if average_time_per_page then
         if self.settings.duration_format == "classic" then
@@ -1728,22 +1789,27 @@ function ReaderFooter:_updateFooterText(force_repaint, force_recompute)
             self.footer_text.height = 0
         else
             self.text_width = self.footer_text:getSize().w
+            self.footer_text.height = self.footer_text:getSize().h
         end
         self.progress_bar.width = 0
     elseif self.settings.progress_bar_position then
-        if text == "" then
-            self.footer_container.dimen.h = 0
+        if self.has_no_mode or text == "" then
+            self.text_width = 0
             self.footer_text.height = 0
+        else
+            self.text_width = self.footer_text:getSize().w
+            self.footer_text.height = self.footer_text:getSize().h
         end
         self.progress_bar.width = math.floor(self._saved_screen_width - 2 * self.settings.progress_margin_width)
-        self.text_width = self.footer_text:getSize().w
     else
         if self.has_no_mode or text == "" then
             self.text_width = 0
+            self.footer_text.height = 0
         else
             local text_max_available_ratio = (100 - self.settings.progress_bar_min_width_pct) / 100
             self.footer_text:setMaxWidth(math.floor(text_max_available_ratio * self._saved_screen_width - 2 * self.settings.progress_margin_width))
             self.text_width = self.footer_text:getSize().w + self.text_left_margin
+            self.footer_text.height = self.footer_text:getSize().h
         end
         self.progress_bar.width = math.floor(
             self._saved_screen_width - self.text_width - self.settings.progress_margin_width*2)
@@ -1766,10 +1832,40 @@ function ReaderFooter:_updateFooterText(force_repaint, force_recompute)
     -- NOTE: That's assuming using "fast" for pans was a good idea, which, it turned out, not so much ;).
     -- NOTE: We skip repaints on page turns/pos update, as that's redundant (and slow).
     if force_repaint then
-        -- NOTE: We need to repaint everything when toggling the progress bar, for some reason.
-        UIManager:setDirty(self.view.dialog, function()
-            return "ui", self.footer_content.dimen
-        end)
+        -- If there was a visibility change, notify ReaderView
+        if self.visibility_change then
+            self.ui:handleEvent(Event:new("ReaderFooterVisibilityChange"))
+            self.visibility_change = nil
+        end
+
+        -- NOTE: Getting the dimensions of the widget is impossible without having drawn it first,
+        --       so, we'll fudge it if need be...
+        --       i.e., when it's no longer visible, because there's nothing to draw ;).
+        local refresh_dim = self.footer_content.dimen
+        -- No more content...
+        if not self.view.footer_visible and not refresh_dim then
+            -- So, instead, rely on self:getHeight to compute self.footer_content's height early...
+            refresh_dim = self.dimen
+            refresh_dim.h = self:getHeight()
+            refresh_dim.y = self._saved_screen_height - refresh_dim.h
+        end
+        -- If we're making the footer visible (or it already is), we don't need to repaint ReaderUI behind it
+        if self.view.footer_visible then
+            -- Unfortunately, it's not a modal (we never show() it), so it's not in the window stack,
+            -- instead, it's baked inside ReaderUI, so it gets slightly trickier...
+            -- NOTE: self.view.footer -> self ;).
+
+            -- c.f., ReaderView:paintTo()
+            UIManager:widgetRepaint(self.view.footer, 0, 0)
+            -- We've painted it first to ensure self.footer_content.dimen is sane
+            UIManager:setDirty(self.view.footer, function()
+                return "ui", self.footer_content.dimen
+            end)
+        else
+            UIManager:setDirty(self.view.dialog, function()
+                return "ui", refresh_dim
+            end)
+        end
     end
 end
 
@@ -1835,9 +1931,10 @@ function ReaderFooter:applyFooterMode(mode)
     -- 7 for from statistics chapter time to read
     -- 8 for front light level
     -- 9 for memory usage
-    -- 10 for wifi status
+    -- 10 for Wi-Fi status
     -- 11 for book title
     -- 12 for current chapter
+    -- 13 for bookmark count
 
     if mode ~= nil then self.mode = mode end
     local prev_visible_state = self.view.footer_visible
@@ -1868,6 +1965,8 @@ function ReaderFooter:applyFooterMode(mode)
         self:updateFooterContainer()
         -- NOTE: _updateFooterText does a resetLayout, but not a forced one!
         self:resetLayout(true)
+        -- Flag _updateFooterText to notify ReaderView to recalculate the visible_area!
+        self.visibility_change = true
     end
 end
 
@@ -1971,6 +2070,18 @@ end
 
 function ReaderFooter:onFrontlightStateChanged()
     if self.settings.frontlight then
+        self:onUpdateFooter(true)
+    end
+end
+
+function ReaderFooter:onNetworkConnected()
+    if self.settings.wifi_status then
+        self:onUpdateFooter(true)
+    end
+end
+
+function ReaderFooter:onNetworkDisconnected()
+    if self.settings.wifi_status then
         self:onUpdateFooter(true)
     end
 end

@@ -4,6 +4,7 @@
 
 local BD = require("ui/bidi")
 local DataStorage = require("datastorage")
+local Dispatcher = require("dispatcher")
 local DocSettings = require("docsettings")
 local Event = require("ui/event")
 local FFIUtil = require("ffi/util")
@@ -38,6 +39,10 @@ local Wallabag = WidgetContainer:new{
     name = "wallabag",
 }
 
+function Wallabag:onDispatcherRegisterActions()
+    Dispatcher:registerAction("wallabag_download", { category="none", event="SynchronizeWallabag", title=_("Wallabag retrieval"), device=true,})
+end
+
 function Wallabag:init()
     self.token_expiry = 0
     -- default values so that user doesn't have to explicitely set them
@@ -50,6 +55,7 @@ function Wallabag:init()
     self.ignore_tags = ""
     self.articles_per_sync = 30
 
+    self:onDispatcherRegisterActions()
     self.ui.menu:registerToMainMenu(self)
     self.wb_settings = self.readSettings()
     self.server_url = self.wb_settings.data.wallabag.server_url
@@ -112,15 +118,14 @@ function Wallabag:addToMainMenu(menu_items)
             {
                 text = _("Delete finished articles remotely"),
                 callback = function()
-                    if not NetworkMgr:isOnline() then
-                        NetworkMgr:promptWifiOn()
-                        return
+                    local connect_callback = function()
+                        local num_deleted = self:processLocalFiles("manual")
+                        UIManager:show(InfoMessage:new{
+                            text = T(_("Articles processed.\nDeleted: %1"), num_deleted)
+                        })
+                        self:refreshCurrentDirIfNeeded()
                     end
-                    local num_deleted = self:processLocalFiles("manual")
-                    UIManager:show(InfoMessage:new{
-                        text = T(_("Articles processed.\nDeleted: %1"), num_deleted)
-                    })
-                    self:refreshCurrentDirIfNeeded()
+                    NetworkMgr:runWhenOnline(connect_callback)
                 end,
                 enabled_func = function()
                     return self.is_delete_finished or self.is_delete_read
@@ -674,7 +679,7 @@ function Wallabag:processRemoteDeletes(remote_article_ids)
     end
     logger.dbg("Wallabag: articles IDs from server: ", remote_article_ids)
 
-    local info = InfoMessage:new{ text = _("Synchonising remote deletions…") }
+    local info = InfoMessage:new{ text = _("Synchronizing remote deletions…") }
     UIManager:show(info)
     UIManager:forceRePaint()
     UIManager:close(info)
@@ -1078,12 +1083,11 @@ function Wallabag:onAddWallabagArticle(article_url)
 end
 
 function Wallabag:onSynchronizeWallabag()
-    if not NetworkMgr:isOnline() then
-        NetworkMgr:promptWifiOn()
-        return
+    local connect_callback = function()
+        self:synchronize()
+        self:refreshCurrentDirIfNeeded()
     end
-    self:synchronize()
-    self:refreshCurrentDirIfNeeded()
+    NetworkMgr:runWhenOnline(connect_callback)
 
     -- stop propagation
     return true

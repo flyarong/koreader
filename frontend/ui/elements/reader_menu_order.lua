@@ -37,6 +37,7 @@ local order = {
         "speed_reading_module_perception_expander",
         "----------------------------",
         "highlight_options",
+        "panel_zoom_options"
     },
     setting = {
         -- common settings
@@ -61,17 +62,21 @@ local order = {
         "keyboard_layout",
         "time",
         "battery",
+        "charging_led", -- if Device:canToggleChargingLED()
+        "autostandby",
         "autosuspend",
         "autoshutdown",
         "ignore_sleepcover",
         "ignore_open_sleepcover",
-        "mass_storage_settings",
+        "ignore_battery_optimizations",
+        "mass_storage_settings", -- if Device:canToggleMassStorage()
+        "file_ext_assoc",
         "screenshot",
     },
     navigation = {
         "back_to_exit",
         "back_in_filemanager",
-        "enable_back_history",
+        "back_in_reader",
         "android_volume_keys",
         "android_camera_key",
         "android_haptic_feedback",
@@ -83,9 +88,11 @@ local order = {
     network = {
         "network_wifi",
         "network_proxy",
+        "network_powersave",
         "network_restore",
         "network_info",
         "network_before_wifi_action",
+        "network_after_wifi_action",
         "network_dismiss_scan",
         "----------------------------",
         "ssh",
@@ -124,6 +131,7 @@ local order = {
         "news_downloader",
         "send2ebook",
         "text_editor",
+        "qrclipboard",
         "profiles",
         "----------------------------",
         "more_tools",
@@ -164,11 +172,9 @@ local order = {
         "book_status",
         "book_info",
         "----------------------------",
-        "system_statistics",
-        "mass_storage_actions",
+        "mass_storage_actions", -- if Device:canToggleMassStorage()
         "----------------------------",
         "ota_update", -- if Device:hasOTAUpdates()
-        "version",
         "help",
         "----------------------------",
         "exit_menu",
@@ -178,6 +184,8 @@ local order = {
         "----------------------------",
         "report_bug",
         "----------------------------",
+        "system_statistics",  -- if enabled (Plugin)
+        "version",
         "about",
     },
     exit_menu = {

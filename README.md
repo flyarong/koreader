@@ -53,7 +53,7 @@ Please follow the model specific steps for your device:
 
 ## Development
 
-[Setting a build environment](doc/Building.md) •
+[Setting up a build environment](doc/Building.md) •
 [Collaborating with Git](doc/Collaborating_with_Git.md) •
 [Building targets](doc/Building_targets.md) •
 [Porting](doc/Porting.md) •
@@ -69,8 +69,6 @@ KOReader is developed and supported by volunteers all around the world. There ar
 - help others with your knowledge on the [forum][link-forum]
 
 Right now we only support [liberapay](https://liberapay.com/KOReader) donations, but you can also create a [bounty][link-bountysource] to motivate others to work on a specific bug or feature request.
-
-Also if you have and old Pocketbook device you don't want, we might find it useful to tinker a bit with that platform. Please contact us through the forum or GitHub.
 
 ## Contributors
 

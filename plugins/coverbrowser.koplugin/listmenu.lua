@@ -224,7 +224,7 @@ function ListMenuItem:update()
         self.is_directory = true
         -- nb items on the right, directory name on the left
         local wright = TextWidget:new{
-            text = self.mandatory,
+            text = self.mandatory_func and self.mandatory_func() or self.mandatory,
             face = Font:getFace("infont", math.min(max_fontsize_fileinfo, _fontSize(15))),
         }
         local pad_width = Screen:scaleBySize(10) -- on the left, in between, and on the right
@@ -235,6 +235,9 @@ function ListMenuItem:update()
             width = wleft_width,
             alignment = "left",
             bold = true,
+            height = dimen.h,
+            height_adjust = true,
+            height_overflow_show_ellipsis = true,
         }
         widget = OverlapGroup:new{
             dimen = dimen,
@@ -317,10 +320,25 @@ function ListMenuItem:update()
                     self.menu._has_cover_images = true
                     self._has_cover_image = true
                 else
-                    -- empty element the size of an image
+                    local fake_cover_w = max_img_w * 0.6
+                    local fake_cover_h = max_img_h
                     wleft = CenterContainer:new{
                         dimen = Geom:new{ w = wleft_width, h = wleft_height },
-                        HorizontalSpan:new{ width = wleft_width },
+                        FrameContainer:new{
+                            width = fake_cover_w + 2*border_size,
+                            height = fake_cover_h + 2*border_size,
+                            margin = 0,
+                            padding = 0,
+                            bordersize = border_size,
+                            dim = self.file_deleted,
+                            CenterContainer:new{
+                                dimen = Geom:new{ w = fake_cover_w, h = fake_cover_h },
+                                TextWidget:new{
+                                    text = "⛶", -- U+26F6 Square four corners
+                                    face = Font:getFace("cfont",  _fontSize(20)),
+                                },
+                            },
+                        },
                     }
                 end
             end
@@ -339,15 +357,23 @@ function ListMenuItem:update()
             --   pages read / nb of pages (not available for crengine doc not opened)
             local directory, filename = util.splitFilePathName(self.filepath) -- luacheck: no unused
             local filename_without_suffix, filetype = util.splitFileNameSuffix(filename)
-            local fileinfo_str = filetype
-            if self.mandatory then
-                fileinfo_str = self.mandatory .. "  " .. BD.wrap(fileinfo_str)
-            end
-            if bookinfo._no_provider then
-                -- for unspported files: don't show extension on the right,
-                -- keep it in filename
-                filename_without_suffix = filename
-                fileinfo_str = self.mandatory
+            local fileinfo_str
+            if self.mandatory_func then
+                -- Currently only provided by History, giving the last time read.
+                -- Just show this date, without the file extension
+                fileinfo_str = self.mandatory_func()
+            else
+                if self.mandatory then
+                    fileinfo_str = BD.wrap(self.mandatory) .. "  " .. BD.wrap(filetype)
+                else
+                    fileinfo_str = filetype
+                end
+                if bookinfo._no_provider then
+                    -- for unspported files: don't show extension on the right,
+                    -- keep it in filename
+                    filename_without_suffix = filename
+                    fileinfo_str = self.mandatory
+                end
             end
             -- Current page / pages are available or more accurate in .sdr/metadata.lua
             -- We use a cache (cleaned at end of this browsing session) to store
@@ -656,6 +682,37 @@ function ListMenuItem:update()
             if self.do_hint_opened and DocSettings:hasSidecarFile(self.filepath) then
                 self.been_opened = true
             end
+            -- No right widget by default, except in History
+            local wright
+            local wright_width = 0
+            local wright_right_padding = 0
+            if self.mandatory_func then
+                -- Currently only provided by History, giving the last time read.
+                -- If we have it, we need to build a more complex widget with
+                -- this date on the right
+                local fileinfo_str = self.mandatory_func()
+                local fontsize_info = math.min(max_fontsize_fileinfo, _fontSize(14))
+                local wfileinfo = TextWidget:new{
+                    text = fileinfo_str,
+                    face = Font:getFace("cfont", fontsize_info),
+                    fgcolor = self.file_deleted and Blitbuffer.COLOR_DARK_GRAY or nil,
+                }
+                local wpageinfo = TextWidget:new{ -- Empty but needed for similar positionning
+                    text = "",
+                    face = Font:getFace("cfont", fontsize_info),
+                }
+                wright_width = wfileinfo:getSize().w
+                wright = CenterContainer:new{
+                    dimen = Geom:new{ w = wright_width, h = dimen.h },
+                    VerticalGroup:new{
+                        align = "right",
+                        VerticalSpan:new{ width = Screen:scaleBySize(2) },
+                        wfileinfo,
+                        wpageinfo,
+                    }
+                }
+                wright_right_padding = Screen:scaleBySize(10)
+            end
             -- A real simple widget, nothing fancy
             local hint = "…" -- display hint it's being loaded
             if self.file_deleted then -- unless file was deleted (can happen with History)
@@ -671,7 +728,7 @@ function ListMenuItem:update()
                 text_widget = TextBoxWidget:new{
                     text = text .. hint,
                     face = Font:getFace("cfont", fontsize_no_bookinfo),
-                    width = dimen.w - 2 * Screen:scaleBySize(10),
+                    width = dimen.w - 2 * Screen:scaleBySize(10) - wright_width - wright_right_padding,
                     alignment = "left",
                     fgcolor = self.file_deleted and Blitbuffer.COLOR_DARK_GRAY or nil,
                 }
@@ -685,6 +742,19 @@ function ListMenuItem:update()
                     text_widget
                 },
             }
+            if wright then -- last read date, in History, even for deleted files
+                widget = OverlapGroup:new{
+                    dimen = dimen,
+                    widget,
+                    RightContainer:new{
+                        dimen = dimen,
+                        HorizontalGroup:new{
+                            wright,
+                            HorizontalSpan:new{ width = wright_right_padding },
+                        },
+                    },
+                }
+            end
         end
     end
 
@@ -931,6 +1001,7 @@ function ListMenu:_updateItemsBuildUI()
                 text = getMenuText(entry),
                 show_parent = self.show_parent,
                 mandatory = entry.mandatory,
+                mandatory_func = entry.mandatory_func,
                 dimen = self.item_dimen:new(),
                 shortcut = item_shortcut,
                 shortcut_style = shortcut_style,

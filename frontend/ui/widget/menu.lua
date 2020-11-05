@@ -8,6 +8,7 @@ local BottomContainer = require("ui/widget/container/bottomcontainer")
 local Button = require("ui/widget/button")
 local CenterContainer = require("ui/widget/container/centercontainer")
 local Device = require("device")
+local FFIUtil = require("ffi/util")
 local FocusManager = require("ui/widget/focusmanager")
 local Font = require("ui/font")
 local FrameContainer = require("ui/widget/container/framecontainer")
@@ -30,7 +31,6 @@ local VerticalGroup = require("ui/widget/verticalgroup")
 local VerticalSpan = require("ui/widget/verticalspan")
 local WidgetContainer = require("ui/widget/container/widgetcontainer")
 local logger = require("logger")
-local util = require("ffi/util")
 local _ = require("gettext")
 local Input = Device.input
 local Screen = Device.screen
@@ -235,12 +235,13 @@ function MenuItem:init()
     -- Padding before mandatory
     local text_mandatory_padding = 0
     local text_ellipsis_mandatory_padding = 0
-    if self.mandatory then
+    local mandatory = self.mandatory_func and self.mandatory_func() or self.mandatory
+    if mandatory then
         text_mandatory_padding = Size.span.horizontal_default
         -- Smaller padding when ellipsis for better visual feeling
         text_ellipsis_mandatory_padding = Size.span.horizontal_small
     end
-    local mandatory = self.mandatory and ""..self.mandatory or ""
+    mandatory = mandatory and ""..mandatory or ""
     local mandatory_widget = TextWidget:new{
         text = mandatory,
         face = self.info_face,
@@ -732,7 +733,7 @@ function Menu:init()
             callback = function()
                 for k, v in ipairs(self.item_table) do
                     --- @todo Support utf8 lowercase.
-                    local filename = util.basename(v.path):lower()
+                    local filename = FFIUtil.basename(v.path):lower()
                     local search_string = self.page_info_text.input_dialog:getInputText():lower()
                     local i, _ = filename:find(search_string)
                     if i == 1 and not v.is_go_up then
@@ -951,7 +952,7 @@ function Menu:updatePageInfo(select_number)
         end
         -- update page information
         if self.page_num > 1 then
-            self.page_info_text:setText(util.template(_("Page %1 of %2"), self.page, self.page_num))
+            self.page_info_text:setText(FFIUtil.template(_("Page %1 of %2"), self.page, self.page_num))
         else
             self.page_info_text:setText("");
         end
@@ -1013,6 +1014,7 @@ function Menu:updateItems(select_number)
                 text = Menu.getMenuText(self.item_table[i]),
                 bidi_wrap_func = self.item_table[i].bidi_wrap_func,
                 mandatory = self.item_table[i].mandatory,
+                mandatory_func = self.item_table[i].mandatory_func,
                 bold = self.item_table.current == i or self.item_table[i].bold == true,
                 dim = self.item_table[i].dim,
                 font = "smallinfofont",
@@ -1326,7 +1328,7 @@ end
 
 function Menu.itemTableFromTouchMenu(t)
     local item_t = {}
-    for k,v in pairs(t) do
+    for k, v in FFIUtil.orderedPairs(t) do
         local item = { text = k }
         if v.callback then
             item.callback = v.callback

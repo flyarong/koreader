@@ -12,7 +12,7 @@ local function kindleEnableWifi(toggle)
     end
     if lipc_handle then
         -- Be extremely thorough... c.f., #6019
-        -- NOTE: I *assume* this'll also ensure we prefer WiFi over 3G/4G, which is a plus in my book...
+        -- NOTE: I *assume* this'll also ensure we prefer Wi-Fi over 3G/4G, which is a plus in my book...
         if toggle == 1 then
             lipc_handle:set_int_property("com.lab126.cmd", "wirelessEnable", 1)
             lipc_handle:set_int_property("com.lab126.wifid", "enable", 1)
@@ -103,20 +103,19 @@ function Kindle:initNetworkManager(NetworkMgr)
     function NetworkMgr:turnOnWifi(complete_callback)
         kindleEnableWifi(1)
         -- NOTE: As we defer the actual work to lipc,
-        --       we have no guarantee the WiFi state will have changed by the time kindleEnableWifi returns,
-        --       so, delay the callback a bit...
+        --       we have no guarantee the Wi-Fi state will have changed by the time kindleEnableWifi returns,
+        --       so, delay the callback until we at least can ensure isConnect is true.
         if complete_callback then
-            local UIManager = require("ui/uimanager")
-            UIManager:scheduleIn(1, complete_callback)
+            NetworkMgr:scheduleConnectivityCheck(complete_callback)
         end
     end
 
     function NetworkMgr:turnOffWifi(complete_callback)
         kindleEnableWifi(0)
-        -- NOTE: Same here...
+        -- NOTE: Same here, except disconnect is simpler, so a dumb delay will do...
         if complete_callback then
             local UIManager = require("ui/uimanager")
-            UIManager:scheduleIn(1, complete_callback)
+            UIManager:scheduleIn(2, complete_callback)
         end
     end
 
@@ -259,25 +258,6 @@ function Kindle:ambientBrightnessLevel()
     return 4
 end
 
---- Makes sure the C BB cannot be used on devices with a 4bpp fb.
-function Kindle:blacklistCBB()
-    local ffi = require("ffi")
-    local dummy = require("ffi/posix_h")
-    local C = ffi.C
-
-    -- As well as on those than can't do HW inversion, as otherwise NightMode would be ineffective.
-    if not self:canUseCBB() or not self:canHWInvert() then
-        logger.info("Blacklisting the C BB on this device")
-        if ffi.os == "Windows" then
-            C._putenv("KO_NO_CBB=true")
-        else
-            C.setenv("KO_NO_CBB", "true", 1)
-        end
-        -- Enforce the global setting, too, so the Dev menu is accurate...
-        G_reader_settings:saveSetting("dev_no_c_blitter", true)
-    end
-end
-
 local Kindle2 = Kindle:new{
     model = "Kindle2",
     hasKeyboard = yes,
@@ -374,7 +354,7 @@ local KindleOasis = Kindle:new{
     hasGSensor = yes,
     display_dpi = 300,
     --[[
-    -- NOTE: Points to event3 on WiFi devices, event4 on 3G devices...
+    -- NOTE: Points to event3 on Wi-Fi devices, event4 on 3G devices...
     --       3G devices apparently have an extra SX9500 Proximity/Capacitive controller for mysterious purposes...
     --       This evidently screws with the ordering, so, use the udev by-path path instead to avoid hackier workarounds.
     --       cf. #2181
@@ -405,7 +385,7 @@ local KindlePaperWhite4 = Kindle:new{
     display_dpi = 300,
     -- NOTE: LTE devices once again have a mysterious extra SX9310 proximity sensor...
     --       Except this time, we can't rely on by-path, because there's no entry for the TS :/.
-    --       Should be event2 on WiFi, event3 on LTE, we'll fix it in init.
+    --       Should be event2 on Wi-Fi, event3 on LTE, we'll fix it in init.
     touch_dev = "/dev/input/event2",
 }
 
@@ -417,9 +397,6 @@ local KindleBasic3 = Kindle:new{
 }
 
 function Kindle2:init()
-    -- Blacklist the C BB before the first BB require...
-    self:blacklistCBB()
-
     self.screen = require("ffi/framebuffer_einkfb"):new{device = self, debug = logger.dbg}
     self.powerd = require("device/kindle/powerd"):new{
         device = self,
@@ -435,9 +412,6 @@ function Kindle2:init()
 end
 
 function KindleDXG:init()
-    -- Blacklist the C BB before the first BB require...
-    self:blacklistCBB()
-
     self.screen = require("ffi/framebuffer_einkfb"):new{device = self, debug = logger.dbg}
     self.powerd = require("device/kindle/powerd"):new{
         device = self,
@@ -454,9 +428,6 @@ function KindleDXG:init()
 end
 
 function Kindle3:init()
-    -- Blacklist the C BB before the first BB require...
-    self:blacklistCBB()
-
     self.screen = require("ffi/framebuffer_einkfb"):new{device = self, debug = logger.dbg}
     self.powerd = require("device/kindle/powerd"):new{
         device = self,
@@ -474,9 +445,6 @@ function Kindle3:init()
 end
 
 function Kindle4:init()
-    -- Blacklist the C BB before the first BB require...
-    self:blacklistCBB()
-
     self.screen = require("ffi/framebuffer_einkfb"):new{device = self, debug = logger.dbg}
     self.powerd = require("device/kindle/powerd"):new{
         device = self,

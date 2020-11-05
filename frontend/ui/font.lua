@@ -214,8 +214,9 @@ end
 --- Gets font face object.
 -- @string font
 -- @int size optional size
+-- @int faceindex optional index of font face in font file
 -- @treturn table @{FontFaceObj}
-function Font:getFace(font, size)
+function Font:getFace(font, size, faceindex)
     -- default to content font
     if not font then font = self.cfont end
 
@@ -235,12 +236,25 @@ function Font:getFace(font, size)
     -- Make a hash from the realname (many fonts in our fontmap use
     -- the same font file: have them share their glyphs cache)
     local hash = realname..size
+    if faceindex then
+        hash = hash .. "/" .. faceindex
+    end
 
     local face_obj = self.faces[hash]
-    -- build face if not found
-    if not face_obj then
+    if face_obj then
+        -- Font found
+        if face_obj.orig_size ~= orig_size then
+            -- orig_size has changed (which may happen on small orig_size variations
+            -- mapping to a same final size, but more importantly when geometry
+            -- or dpi has changed): keep it updated, so code that would re-use
+            -- it to fetch another font get the current original font size and
+            -- not one from the past
+            face_obj.orig_size = orig_size
+        end
+    else
+        -- Build face if not found
         local builtin_font_location = FontList.fontdir.."/"..realname
-        local ok, face = pcall(Freetype.newFace, builtin_font_location, size)
+        local ok, face = pcall(Freetype.newFace, builtin_font_location, size, faceindex)
 
         -- Not all fonts are bundled on all platforms because they come with the system.
         -- In that case, search through all font folders for the requested font.
@@ -251,7 +265,7 @@ function Font:getFace(font, size)
             for _k, _v in ipairs(fonts) do
                 if _v:find(escaped_realname) then
                     logger.dbg("Found font:", realname, "in", _v)
-                    ok, face = pcall(Freetype.newFace, _v, size)
+                    ok, face = pcall(Freetype.newFace, _v, size, faceindex)
 
                     if ok then break end
                 end

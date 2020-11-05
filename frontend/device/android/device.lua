@@ -1,3 +1,4 @@
+local FFIUtil = require("ffi/util")
 local Generic = require("device/generic/device")
 local A, android = pcall(require, "android")  -- luacheck: ignore
 local Geom = require("ui/geometry")
@@ -7,7 +8,7 @@ local lfs = require("libs/libkoreader-lfs")
 local logger = require("logger")
 local util = require("util")
 local _ = require("gettext")
-local T = require("ffi/util").template
+local T = FFIUtil.template
 
 local function yes() return true end
 local function no() return false end
@@ -46,22 +47,26 @@ local function getCodename()
     return codename
 end
 
-local EXTERNAL_DICTS_AVAILABILITY_CHECKED = false
-local EXTERNAL_DICTS = require("device/android/dictionaries")
-local external_dict_when_back_callback = nil
-
-local function getExternalDicts()
-    if not EXTERNAL_DICTS_AVAILABILITY_CHECKED then
-        EXTERNAL_DICTS_AVAILABILITY_CHECKED = true
-        for i, v in ipairs(EXTERNAL_DICTS) do
-            local package = v[4]
-            if android.isPackageEnabled(package) then
-                v[3] = true
-            end
-        end
-    end
-    return EXTERNAL_DICTS
-end
+-- thirdparty app support
+local external = require("device/thirdparty"):new{
+    dicts = {
+        { "Aard2", "Aard2", false, "itkach.aard2", "aard2" },
+        { "Alpus", "Alpus", false, "com.ngcomputing.fora.android", "search" },
+        { "ColorDict", "ColorDict", false, "com.socialnmobile.colordict", "colordict" },
+        { "Eudic", "Eudic", false, "com.eusoft.eudic", "send" },
+        { "EudicPlay", "Eudic (Google Play)", false, "com.qianyan.eudic", "send" },
+        { "Fora", "Fora Dict", false, "com.ngc.fora", "search" },
+        { "ForaPro", "Fora Dict Pro", false, "com.ngc.fora.android", "search" },
+        { "GoldenFree", "GoldenDict Free", false, "mobi.goldendict.android.free", "send" },
+        { "GoldenPro", "GoldenDict Pro", false, "mobi.goldendict.android", "send" },
+        { "Kiwix", "Kiwix", false, "org.kiwix.kiwixmobile", "text" },
+        { "Mdict", "Mdict", false, "cn.mdict", "send" },
+        { "QuickDic", "QuickDic", false, "de.reimardoeffinger.quickdic", "quickdic" },
+    },
+    check = function(self, app)
+        return android.isPackageEnabled(app)
+    end,
+}
 
 local Device = Generic:new{
     isAndroid = yes,
@@ -72,7 +77,7 @@ local Device = Generic:new{
     hasEinkScreen = function() return android.isEink() end,
     hasColorScreen = function() return not android.isEink() end,
     hasFrontlight = yes,
-    hasLightLevelFallback = yes,
+    hasNaturalLight = android.isWarmthDevice,
     canRestart = no,
     canSuspend = no,
     firmware_rev = android.app.activity.sdkVersion,
@@ -81,6 +86,7 @@ local Device = Generic:new{
     isHapticFeedbackEnabled = yes,
     hasClipboard = yes,
     hasOTAUpdates = canUpdateApk,
+    hasFastWifiStatusQuery = yes,
     canOpenLink = yes,
     openLink = function(self, link)
         if not link or type(link) ~= "string" then return end
@@ -93,18 +99,13 @@ local Device = Generic:new{
     doShareText = function(text) android.sendText(text) end,
 
     canExternalDictLookup = yes,
-    getExternalDictLookupList = getExternalDicts,
+    getExternalDictLookupList = function() return external.dicts end,
     doExternalDictLookup = function (self, text, method, callback)
-        external_dict_when_back_callback = callback
-        local package, action = nil
-        for i, v in ipairs(getExternalDicts()) do
-            if v[1] == method then
-                package = v[4]
-                action = v[5]
-                break
-            end
+        external.when_back_callback = callback
+        local _, app, action = external:checkMethod("dict", method)
+        if app and action then
+            android.dictLookup(text, app, action)
         end
-        android.dictLookup(text, package, action)
     end,
 
 
@@ -133,6 +134,8 @@ function Device:init()
             logger.dbg("Android application event", ev.code)
             if ev.code == C.APP_CMD_SAVE_STATE then
                 return "SaveState"
+            elseif ev.code == C.APP_CMD_DESTROY then
+                UIManager:quit()
             elseif ev.code == C.APP_CMD_GAINED_FOCUS
                 or ev.code == C.APP_CMD_INIT_WINDOW
                 or ev.code == C.APP_CMD_WINDOW_REDRAW_NEEDED then
@@ -145,16 +148,23 @@ function Device:init()
                     local new_size = this.device.screen:getSize()
                     logger.info("Resizing screen to", new_size)
                     local Event = require("ui/event")
+                    local FileManager = require("apps/filemanager/filemanager")
                     UIManager:broadcastEvent(Event:new("SetDimensions", new_size))
                     UIManager:broadcastEvent(Event:new("ScreenResize", new_size))
                     UIManager:broadcastEvent(Event:new("RedrawCurrentPage"))
+                    if FileManager.instance then
+                        FileManager.instance:reinit(FileManager.instance.path,
+                            FileManager.instance.focused_file)
+                        UIManager:setDirty(FileManager.instance.banner, function()
+                            return "ui", FileManager.instance.banner.dimen
+                        end)
+                    end
                 end
                 -- to-do: keyboard connected, disconnected
             elseif ev.code == C.APP_CMD_RESUME then
-                EXTERNAL_DICTS_AVAILABILITY_CHECKED = false
-                if external_dict_when_back_callback then
-                    external_dict_when_back_callback()
-                    external_dict_when_back_callback = nil
+                if external.when_back_callback then
+                    external.when_back_callback()
+                    external.when_back_callback = nil
                 end
                 local new_file = android.getIntent()
                 if new_file ~= nil and lfs.attributes(new_file, "mode") == "file" then
@@ -217,8 +227,9 @@ function Device:init()
         local timeout = G_reader_settings:readSetting("android_screen_timeout")
         if timeout then
             if timeout == C.AKEEP_SCREEN_ON_ENABLED
-            or (timeout > C.AKEEP_SCREEN_ON_DISABLED
-                and android.settings.canWrite()) then
+                or timeout > C.AKEEP_SCREEN_ON_DISABLED
+                and android.settings.hasPermission("settings")
+            then
                 android.timeout.set(timeout)
             end
         end
@@ -242,12 +253,6 @@ function Device:init()
     -- check if we ignore the back button completely
     if G_reader_settings:isTrue("android_ignore_back_button") then
         android.setBackButtonIgnored(true)
-    end
-
-    -- check if we enable a custom light level for this activity
-    local last_value = G_reader_settings:readSetting("fl_last_level")
-    if type(last_value) == "number" and last_value >= 0 then
-        Device:setScreenBrightness(last_value)
     end
 
     Generic.init(self)
@@ -306,10 +311,6 @@ function Device:setViewport(x,y,w,h)
     logger.info(string.format("Switching viewport to new geometry [x=%d,y=%d,w=%d,h=%d]",x, y, w, h))
     local viewport = Geom:new{x=x, y=y, w=w, h=h}
     self.screen:setViewport(viewport)
-end
-
-function Device:setScreenBrightness(level)
-    android.setScreenBrightness(level)
 end
 
 function Device:toggleFullscreen()
@@ -372,6 +373,61 @@ function Device:canExecuteScript(file)
     local file_ext = string.lower(util.getFileNameSuffix(file))
     if android.prop.flavor ~= "fdroid" and file_ext == "sh"  then
         return true
+    end
+end
+
+--swallow all events
+local function processEvents()
+    local events = ffi.new("int[1]")
+    local source = ffi.new("struct android_poll_source*[1]")
+    local poll_state = android.lib.ALooper_pollAll(-1, nil, events, ffi.cast("void**", source))
+    if poll_state >= 0 then
+        if source[0] ~= nil then
+            if source[0].id == C.LOOPER_ID_MAIN then
+                local cmd = C.android_app_read_cmd(android.app)
+                C.android_app_pre_exec_cmd(android.app, cmd)
+                C.android_app_post_exec_cmd(android.app, cmd)
+            elseif source[0].id == C.LOOPER_ID_INPUT then
+                local event = ffi.new("AInputEvent*[1]")
+                while android.lib.AInputQueue_getEvent(android.app.inputQueue, event) >= 0 do
+                    if android.lib.AInputQueue_preDispatchEvent(android.app.inputQueue, event[0]) == 0 then
+                        android.lib.AInputQueue_finishEvent(android.app.inputQueue, event[0], 1)
+                    end
+                end
+            end
+        end
+    end
+end
+
+function Device:showLightDialog()
+    local title = android.isEink() and _("Frontlight settings") or _("Light settings")
+    android.lights.showDialog(title, _("Brightness"), _("Warmth"), _("OK"), _("Cancel"))
+    repeat
+        processEvents() -- swallow all events, including the last one
+        FFIUtil.usleep(25000) -- sleep 25ms before next check if dialog was quit
+    until (android.lights.dialogState() ~= C.ALIGHTS_DIALOG_OPENED)
+
+    local GestureDetector = require("device/gesturedetector")
+    GestureDetector:clearStates()
+
+    local action = android.lights.dialogState()
+    if action == C.ALIGHTS_DIALOG_OK then
+        self.powerd.fl_intensity = self.powerd:frontlightIntensityHW()
+        logger.dbg("Dialog OK, brightness: " .. self.powerd.fl_intensity)
+        if android.isWarmthDevice() then
+            self.powerd.fl_warmth = self.powerd:getWarmth()
+            logger.dbg("Dialog OK, warmth: " .. self.powerd.fl_warmth)
+        end
+        local Event = require("ui/event")
+        local UIManager = require("ui/uimanager")
+        UIManager:broadcastEvent(Event:new("FrontlightStateChanged"))
+    elseif action == C.ALIGHTS_DIALOG_CANCEL then
+        logger.dbg("Dialog Cancel, brightness: " .. self.powerd.fl_intensity)
+        self.powerd:setIntensityHW(self.powerd.fl_intensity)
+        if android.isWarmthDevice() then
+            logger.dbg("Dialog Cancel, warmth: " .. self.powerd.fl_warmth)
+            self.powerd:setWarmth(self.powerd.fl_warmth)
+        end
     end
 end
 

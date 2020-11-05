@@ -188,7 +188,7 @@ function ReaderRolling:onReadSettings(config)
     --- @fixme remove this branch with migration script
     elseif last_per then
         self.setupXpointer = function()
-            self:_gotoPercent(last_per)
+            self:_gotoPercent(last_per * 100)
             -- _gotoPercent calls _gotoPos, which only updates self.current_pos
             -- and self.view.
             -- we need to do a real pos change in self.ui.document._document
@@ -693,7 +693,7 @@ end
 function ReaderRolling:onGotoViewRel(diff)
     logger.dbg("goto relative screen:", diff, ", in mode: ", self.view.view_mode)
     if self.view.view_mode == "scroll" then
-        local footer_height = (self.view.footer_visible and 1 or 0) * self.view.footer:getHeight()
+        local footer_height = ((self.view.footer_visible and not self.view.footer.settings.reclaim_height) and 1 or 0) * self.view.footer:getHeight()
         local page_visible_height = self.ui.dimen.h - footer_height
         local pan_diff = diff * page_visible_height
         if self.show_overlap_enable then
@@ -787,6 +787,7 @@ function ReaderRolling:updatePos()
         self.old_doc_height = new_height
         self.old_page = new_page
         self.ui:handleEvent(Event:new("UpdateToc"))
+        self.view.footer:setTocMarkers(true)
         self.view.footer:onUpdateFooter()
     end
     self:updateTopStatusBarMarkers()
@@ -868,7 +869,7 @@ function ReaderRolling:_gotoPos(new_pos, do_dim_area)
     if new_pos > max_pos then new_pos = max_pos end
     -- adjust dim_area according to new_pos
     if self.view.view_mode ~= "page" and self.show_overlap_enable and do_dim_area then
-        local footer_height = (self.view.footer_visible and 1 or 0) * self.view.footer:getHeight()
+        local footer_height = ((self.view.footer_visible and not self.view.footer.settings.reclaim_height) and 1 or 0) * self.view.footer:getHeight()
         local page_visible_height = self.ui.dimen.h - footer_height
         local panned_step = new_pos - self.current_pos
         self.view.dim_area.x = 0
@@ -895,7 +896,11 @@ function ReaderRolling:_gotoPos(new_pos, do_dim_area)
 end
 
 function ReaderRolling:_gotoPercent(new_percent)
-    self:_gotoPos(new_percent * self.ui.document.info.doc_height / 10000)
+    if self.view.view_mode == "page" then
+        self:_gotoPage(new_percent * self.ui.document:getPageCount() / 100)
+    else
+        self:_gotoPos(new_percent * self.ui.document.info.doc_height / 100)
+    end
 end
 
 function ReaderRolling:_gotoPage(new_page, free_first_page)
@@ -978,7 +983,7 @@ function ReaderRolling:updateTopStatusBarMarkers()
         return
     end
     local pages = self.ui.document:getPageCount()
-    local ticks = self.ui.toc:getTocTicksForFooter()
+    local ticks = self.ui.toc:getTocTicksFlattened()
     self.ui.document:setHeaderProgressMarks(pages, ticks)
 end
 
@@ -1198,6 +1203,12 @@ function ReaderRolling:checkXPointersAndProposeDOMVersionUpgrade()
 
         -- Set latest DOM version, to be used at next load
         local latest_dom_version = self.ui.document:getLatestDomVersion()
+        -- For some formats, DOM version 20200824 uses a new HTML parser that may build
+        -- a different DOM tree. So, migrate these to a lower version
+        local doc_format = self.ui.document:getDocumentFormat()
+        if doc_format == "HTML" or doc_format == "CHM" or doc_format == "PDB" then
+            latest_dom_version = self.ui.document:getDomVersionWithNormalizedXPointers()
+        end
         self.ui.doc_settings:saveSetting("cre_dom_version", latest_dom_version)
         logger.info("  cre_dom_version updated to", latest_dom_version)
 

@@ -1,72 +1,61 @@
 local Event = require("ui/event")
 local Generic = require("device/generic/device")
+local SDL = require("ffi/SDL2_0")
 local logger = require("logger")
 
 local function yes() return true end
 local function no() return false end
+local function notOSX() return jit.os ~= "OSX" end
 
--- xdg-open is used on most linux systems
-local function hasXdgOpen()
-    local std_out = io.popen("xdg-open --version 2>/dev/null")
-    local version = nil
-    if std_out ~= nil then
-        version = std_out:read()
-        std_out:close()
-    end
-    return version ~= nil
-end
-
--- open is the macOS counterpart
-local function hasMacOpen()
-    return os.execute("open >/dev/null 2>&1") == 256
-end
-
--- get the name of the binary used to open links
-local function getLinkOpener()
-    local enabled = false
-    local tool = nil
-    if jit.os == "Linux" and hasXdgOpen() then
-        enabled = true
-        tool = "xdg-open"
-    elseif jit.os == "OSX" and hasMacOpen() then
-        enabled = true
-        tool = "open"
-    end
-    return enabled, tool
-end
-
--- differentiate between urls and commands
 local function isUrl(s)
-    if type(s) == "string" and s:match("*?://") then
-        return true
+    return type(s) == "string" and s:match("*?://")
+end
+
+local function isCommand(s)
+    return os.execute("which "..s.." >/dev/null 2>&1") == 0
+end
+
+local function runCommand(command)
+    local env = jit.os ~= "OSX" and 'env -u LD_LIBRARY_PATH ' or ""
+    return os.execute(env..command) == 0
+end
+
+local function getDesktopDicts()
+    local t = {
+        { "Goldendict", "Goldendict", false, "goldendict" },
+    }
+    -- apple dict is always present in osx
+    if jit.os == "OSX" then
+        table.insert(t, 1, { "Apple", "AppleDict", false, "dict://" })
+    end
+    return t
+end
+
+local function getLinkOpener()
+    if jit.os == "Linux" and isCommand("xdg-open") then
+        return true, "xdg-open"
+    elseif jit.os == "OSX" and isCommand("open") then
+        return true, "open"
     end
     return false
 end
 
-local EXTERNAL_DICTS_AVAILABILITY_CHECKED = false
-local EXTERNAL_DICTS = require("device/sdl/dictionaries")
-local external_dict_when_back_callback = nil
-
-local function getExternalDicts()
-    if not EXTERNAL_DICTS_AVAILABILITY_CHECKED then
-        EXTERNAL_DICTS_AVAILABILITY_CHECKED = true
-        for i, v in ipairs(EXTERNAL_DICTS) do
-            local tool = v[4]
-            if not tool then return end
-            if isUrl(tool) and getLinkOpener()
-            or os.execute("which "..tool .. " >/dev/null 2>&1") == 0 then
-                v[3] = true
-            end
+-- thirdparty app support
+local external = require("device/thirdparty"):new{
+    dicts = getDesktopDicts(),
+    check = function(self, app)
+        if (isUrl(app) and getLinkOpener()) or isCommand(app) then
+            return true
         end
-    end
-    return EXTERNAL_DICTS
-end
-
+        return false
+    end,
+}
 
 local Device = Generic:new{
     model = "SDL",
     isSDL = yes,
     home_dir = os.getenv("HOME"),
+    hasBattery = SDL.getPowerInfo(),
     hasKeyboard = yes,
     hasKeys = yes,
     hasDPad = yes,
@@ -80,33 +69,26 @@ local Device = Generic:new{
     openLink = function(self, link)
         local enabled, tool = getLinkOpener()
         if not enabled or not tool or not link or type(link) ~= "string" then return end
-        if jit.os == "OSX" then
-            return os.execute(tool .. " '" .. link .. "'") == 0
-        else
-            return os.execute('env -u LD_LIBRARY_PATH '..tool.." '"..link.."'") == 0
-        end
+        return runCommand(tool .. " '" .. link .. "'")
     end,
     canExternalDictLookup = yes,
-    getExternalDictLookupList = getExternalDicts,
+    getExternalDictLookupList = function() return external.dicts end,
     doExternalDictLookup = function(self, text, method, callback)
-        external_dict_when_back_callback = callback
-        local tool, ok = nil
-        for i, v in ipairs(getExternalDicts()) do
-            if v[1] == method then
-                tool = v[4]
-                break
+        external.when_back_callback = callback
+        local ok, app = external:checkMethod("dict", method)
+        if app then
+            if isUrl(app) and getLinkOpener() then
+                ok = self:openLink(app..text)
+            elseif isCommand(app) then
+                ok = runCommand(app .. " " .. text .. " &")
             end
         end
-        if isUrl(tool) and getLinkOpener() then
-            ok = self:openLink(tool..text)
-        else
-            ok = os.execute('env -u LD_LIBRARY_PATH '..tool.." "..text.." &") == 0
-        end
-        if ok and external_dict_when_back_callback then
-            external_dict_when_back_callback()
-            external_dict_when_back_callback = nil
+        if ok and external.when_back_callback then
+            external.when_back_callback()
+            external.when_back_callback = nil
         end
     end,
+    window = G_reader_settings:readSetting("sdl_window") or {},
 }
 
 local AppImage = Device:new{
@@ -116,26 +98,26 @@ local AppImage = Device:new{
     isDesktop = yes,
 }
 
+local Desktop = Device:new{
+    model = SDL.getPlatform(),
+    isDesktop = yes,
+    canRestart = notOSX,
+    hasExitOptions = notOSX,
+}
+
 local Emulator = Device:new{
     model = "Emulator",
     isEmulator = yes,
+    hasBattery = yes,
     hasEinkScreen = yes,
     hasFrontlight = yes,
+    hasNaturalLight = yes,
+    hasNaturalLightApi = yes,
     hasWifiToggle = yes,
     hasWifiManager = yes,
     canPowerOff = yes,
     canReboot = yes,
     canSuspend = yes,
-}
-
-local Linux = Device:new{
-    model = "Linux",
-    isDesktop = yes,
-}
-
-local Mac = Device:new{
-    model = "Mac",
-    isDesktop = yes,
 }
 
 local UbuntuTouch = Device:new{
@@ -145,26 +127,34 @@ local UbuntuTouch = Device:new{
 }
 
 function Device:init()
-    local emulator = self.isEmulator
     -- allows to set a viewport via environment variable
     -- syntax is Lua table syntax, e.g. EMULATE_READER_VIEWPORT="{x=10,w=550,y=5,h=790}"
     local viewport = os.getenv("EMULATE_READER_VIEWPORT")
-    if emulator and viewport then
+    if viewport then
         self.viewport = require("ui/geometry"):new(loadstring("return " .. viewport)())
     end
 
     local touchless = os.getenv("DISABLE_TOUCH") == "1"
-    if emulator and touchless then
+    if touchless then
         self.isTouchDevice = no
     end
 
     local portrait = os.getenv("EMULATE_READER_FORCE_PORTRAIT")
-    if emulator and portrait then
+    if portrait then
         self.isAlwaysPortrait = yes
     end
 
     self.hasClipboard = yes
-    self.screen = require("ffi/framebuffer_SDL2_0"):new{device = self, debug = logger.dbg}
+    self.screen = require("ffi/framebuffer_SDL2_0"):new{
+        device = self,
+        debug = logger.dbg,
+        w = self.window.width,
+        h = self.window.height,
+        x = self.window.left,
+        y = self.window.top,
+        is_always_portrait = self.isAlwaysPortrait(),
+    }
+    self.powerd = require("device/sdl/powerd"):new{device = self}
 
     local ok, re = pcall(self.screen.setWindowIcon, self.screen, "resources/koreader.png")
     if not ok then logger.warn(re) end
@@ -182,6 +172,7 @@ function Device:init()
             local SDL_MOUSEWHEEL = 1027
             local SDL_MULTIGESTURE = 2050
             local SDL_DROPFILE = 4096
+            local SDL_WINDOWEVENT_MOVED = 4
             local SDL_WINDOWEVENT_RESIZED = 5
 
             if ev.code == SDL_MOUSEWHEEL then
@@ -248,6 +239,8 @@ function Device:init()
                 device_input.device.screen.screen_size.w = ev.value.data1
                 device_input.device.screen.screen_size.h = ev.value.data2
                 device_input.device.screen.resize(device_input.device.screen, ev.value.data1, ev.value.data2)
+                self.window.width = ev.value.data1
+                self.window.height = ev.value.data2
 
                 local new_size = device_input.device.screen:getSize()
                 logger.dbg("Resizing screen to", new_size)
@@ -261,6 +254,9 @@ function Device:init()
                 -- this triggers paged media like PDF and DjVu to redraw
                 -- CreDocument doesn't need it
                 UIManager:broadcastEvent(Event:new("RedrawCurrentPage"))
+            elseif ev.code == SDL_WINDOWEVENT_MOVED then
+                self.window.left = ev.value.data1
+                self.window.top = ev.value.data2
             end
         end,
         hasClipboardText = function()
@@ -287,7 +283,7 @@ function Device:init()
         end
     end
 
-    if emulator and portrait then
+    if portrait then
         self.input:registerEventAdjustHook(self.input.adjustTouchSwitchXY)
         self.input:registerEventAdjustHook(
             self.input.adjustTouchMirrorX,
@@ -314,7 +310,13 @@ function Device:setDateTime(year, month, day, hour, min, sec)
     end
 end
 
-function Device:simulateSuspend()
+function Device:exit()
+    G_reader_settings:saveSetting("sdl_window", self.window)
+    G_reader_settings:flush()
+    Generic.exit(self)
+end
+
+function Emulator:simulateSuspend()
     local InfoMessage = require("ui/widget/infomessage")
     local UIManager = require("ui/uimanager")
     local _ = require("gettext")
@@ -323,7 +325,7 @@ function Device:simulateSuspend()
     })
 end
 
-function Device:simulateResume()
+function Emulator:simulateResume()
     local InfoMessage = require("ui/widget/infomessage")
     local UIManager = require("ui/uimanager")
     local _ = require("gettext")
@@ -355,15 +357,13 @@ function Emulator:initNetworkManager(NetworkMgr)
     end
 end
 
+io.write("Starting SDL in " .. SDL.getBasePath() .. "\n")
+
 -------------- device probe ------------
 if os.getenv("APPIMAGE") then
     return AppImage
 elseif os.getenv("KO_MULTIUSER") then
-    if jit.os == "OSX" then
-        return Mac
-    else
-        return Linux
-    end
+    return Desktop
 elseif os.getenv("UBUNTU_APPLICATION_ISOLATION") then
     return UbuntuTouch
 else

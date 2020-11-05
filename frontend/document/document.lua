@@ -135,20 +135,20 @@ function Document:fastDigest(docsettings)
         if not result then
             logger.dbg("computing and storing partial_md5_checksum")
             local bit = require("bit")
-            local md5 = require("ffi/MD5")
+            local md5 = require("ffi/sha2").md5
             local lshift = bit.lshift
             local step, size = 1024, 1024
-            local m = md5.new()
+            local update = md5()
             for i = -1, 10 do
                 file:seek("set", lshift(step, 2*i))
                 local sample = file:read(size)
                 if sample then
-                    m:update(sample)
+                    update(sample)
                 else
                     break
                 end
             end
-            result = m:sum()
+            result = update()
             docsettings:saveSetting("partial_md5_checksum", result)
         end
         if tmp_docsettings then
@@ -411,6 +411,22 @@ end
 function Document:getDrawnImagesStatistics()
     -- For now, only set by CreDocument in CreDocument:drawCurrentView()
     return self._drawn_images_count, self._drawn_images_surface_ratio
+end
+
+function Document:getPagePart(pageno, rect, rotation)
+    local canvas_size = CanvasContext:getSize()
+    local zoom = math.min(canvas_size.w*2 / rect.w, canvas_size.h*2 / rect.h)
+    -- it's really, really important to do math.floor, otherwise we get image projection
+    local scaled_rect = {
+        x = math.floor(rect.x * zoom),
+        y = math.floor(rect.y * zoom),
+        w = math.floor(rect.w * zoom),
+        h = math.floor(rect.h * zoom),
+    }
+    local tile = self:renderPage(pageno, scaled_rect, zoom, rotation, 1, 0)
+    local target = Blitbuffer.new(scaled_rect.w, scaled_rect.h, self.render_color and self.color_bb_type or nil)
+    target:blitFrom(tile.bb, 0, 0, scaled_rect.x, scaled_rect.y, scaled_rect.w, scaled_rect.h)
+    return target
 end
 
 function Document:getPageText(pageno)

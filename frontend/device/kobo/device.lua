@@ -1,6 +1,5 @@
 local Generic = require("device/generic/device")
 local Geom = require("ui/geometry")
-local TimeVal = require("ui/timeval")
 local WakeupMgr = require("device/wakeupmgr")
 local logger = require("logger")
 local util = require("ffi/util")
@@ -10,11 +9,11 @@ local function yes() return true end
 local function no() return false end
 
 local function koboEnableWifi(toggle)
-    if toggle == 1 then
-        logger.info("Kobo WiFi: enabling WiFi")
+    if toggle == true then
+        logger.info("Kobo Wi-Fi: enabling Wi-Fi")
         os.execute("./enable-wifi.sh")
     else
-        logger.info("Kobo WiFi: disabling WiFi")
+        logger.info("Kobo Wi-Fi: disabling Wi-Fi")
         os.execute("./disable-wifi.sh")
     end
 end
@@ -25,6 +24,7 @@ local Kobo = Generic:new{
     isKobo = yes,
     isTouchDevice = yes, -- all of them are
     hasOTAUpdates = yes,
+    hasFastWifiStatusQuery = yes,
     hasWifiManager = yes,
     canReboot = yes,
     canPowerOff = yes,
@@ -48,6 +48,7 @@ local Kobo = Generic:new{
     -- HW inversion is generally safe on Kobo, except on a few boards/kernels
     canHWInvert = yes,
     home_dir = "/mnt/onboard",
+    canToggleMassStorage = yes,
 }
 
 --- @todo hasKeys for some devices?
@@ -57,10 +58,6 @@ local KoboTrilogy = Kobo:new{
     model = "Kobo_trilogy",
     needsTouchScreenProbe = yes,
     touch_switch_xy = false,
-    -- Some Kobo Touch models' kernel does not generate touch event with epoch
-    -- timestamp. This flag will probe for those models and setup event adjust
-    -- hook accordingly
-    touch_probe_ev_epoch_time = true,
     hasKeys = yes,
     hasMultitouch = no,
 }
@@ -78,7 +75,6 @@ local KoboPixie = Kobo:new{
 local KoboDaylight = Kobo:new{
     model = "Kobo_daylight",
     hasFrontlight = yes,
-    touch_probe_ev_epoch_time = true,
     touch_phoenix_protocol = true,
     display_dpi = 300,
     hasNaturalLight = yes,
@@ -93,8 +89,11 @@ local KoboDaylight = Kobo:new{
 local KoboDahlia = Kobo:new{
     model = "Kobo_dahlia",
     hasFrontlight = yes,
+    -- NOTE: The hardware can technically track 2 different fingers, but we don't seem to be able to figure it out...
     hasMultitouch = no,
     touch_phoenix_protocol = true,
+    -- There's no slot 0, the first finger gets assigned slot 1, and the second slot 2
+    main_finger_slot = 1,
     display_dpi = 265,
     -- the bezel covers the top 11 pixels:
     viewport = Geom:new{x=0, y=11, w=1080, h=1429},
@@ -134,7 +133,6 @@ local KoboSnow = Kobo:new{
     hasFrontlight = yes,
     touch_snow_protocol = true,
     touch_mirrored_x = false,
-    touch_probe_ev_epoch_time = true,
     display_dpi = 265,
     hasNaturalLight = yes,
     frontlight_settings = {
@@ -162,7 +160,6 @@ local KoboSnowRev2 = Kobo:new{
 local KoboStar = Kobo:new{
     model = "Kobo_star",
     hasFrontlight = yes,
-    touch_probe_ev_epoch_time = true,
     touch_phoenix_protocol = true,
     display_dpi = 212,
 }
@@ -172,7 +169,6 @@ local KoboStar = Kobo:new{
 local KoboStarRev2 = Kobo:new{
     model = "Kobo_star_r2",
     hasFrontlight = yes,
-    touch_probe_ev_epoch_time = true,
     touch_phoenix_protocol = true,
     display_dpi = 212,
 }
@@ -196,6 +192,7 @@ local KoboPika = Kobo:new{
 -- Kobo Clara HD:
 local KoboNova = Kobo:new{
     model = "Kobo_nova",
+    canToggleChargingLED = yes,
     hasFrontlight = yes,
     touch_snow_protocol = true,
     display_dpi = 300,
@@ -220,6 +217,7 @@ local KoboNova = Kobo:new{
 --       There's also a CM_ROTARY_ENABLE command, but which seems to do as much nothing as the STATUS one...
 local KoboFrost = Kobo:new{
     model = "Kobo_frost",
+    canToggleChargingLED = yes,
     hasFrontlight = yes,
     hasKeys = yes,
     hasGSensor = yes,
@@ -243,6 +241,7 @@ local KoboFrost = Kobo:new{
 -- NOTE: Assume the same quirks as the Forma apply.
 local KoboStorm = Kobo:new{
     model = "Kobo_storm",
+    canToggleChargingLED = yes,
     hasFrontlight = yes,
     hasKeys = yes,
     hasGSensor = yes,
@@ -266,53 +265,14 @@ local KoboStorm = Kobo:new{
 --- @fixme: Untested, assume it's Clara-ish for now.
 local KoboLuna = Kobo:new{
     model = "Kobo_luna",
+    canToggleChargingLED = yes,
     hasFrontlight = yes,
     touch_snow_protocol = true,
     display_dpi = 212,
 }
 
--- This function will update itself after the first touch event
-local probeEvEpochTime
-probeEvEpochTime = function(self, ev)
-    local now = TimeVal:now()
-    -- This check should work as long as main UI loop is not blocked for more
-    -- than 10 minute before handling the first touch event.
-    if ev.time.sec <= now.sec - 600 then
-        -- time is seconds since boot, force it to epoch
-        probeEvEpochTime = function(_, _ev)
-            _ev.time = TimeVal:now()
-        end
-        ev.time = now
-    else
-        -- time is already epoch time, no need to do anything
-        probeEvEpochTime = function(_, _) end
-    end
-end
-
--- Make sure the C BB cannot be used on devices with unsafe HW inversion, as otherwise NightMode would be ineffective.
-function Kobo:blacklistCBB()
-    local ffi = require("ffi")
-    local dummy = require("ffi/posix_h")
-    local C = ffi.C
-
-    -- NOTE: canUseCBB is never no on Kobo ;).
-    if not self:canUseCBB() or not self:canHWInvert() then
-        logger.info("Blacklisting the C BB on this device")
-        if ffi.os == "Windows" then
-            C._putenv("KO_NO_CBB=true")
-        else
-            C.setenv("KO_NO_CBB", "true", 1)
-        end
-        -- Enforce the global setting, too, so the Dev menu is accurate...
-        G_reader_settings:saveSetting("dev_no_c_blitter", true)
-    end
-end
-
 function Kobo:init()
-    -- Blacklist the C BB before the first BB require...
-    self:blacklistCBB()
-
-    self.screen = require("ffi/framebuffer_mxcfb"):new{device = self, debug = logger.dbg}
+    self.screen = require("ffi/framebuffer_mxcfb"):new{device = self, debug = logger.dbg, is_always_portrait = self.isAlwaysPortrait()}
     if self.screen.fb_bpp == 32 then
         -- Ensure we decode images properly, as our framebuffer is BGRA...
         logger.info("Enabling Kobo @ 32bpp BGR tweaks")
@@ -353,13 +313,23 @@ function Kobo:init()
     }
     self.wakeup_mgr = WakeupMgr:new()
 
+    -- Tweak initial slot, if necessary
+    if self.main_finger_slot then
+        self.input.cur_slot = self.main_finger_slot
+        self.input.ev_slots = {
+            [self.main_finger_slot] = {
+                slot = self.main_finger_slot,
+            }
+        }
+    end
+
     Generic.init(self)
 
     -- When present, event2 is the raw accelerometer data (3-Axis Orientation/Motion Detection)
     self.input.open("/dev/input/event0") -- Various HW Buttons, Switches & Synthetic NTX events
     self.input.open("/dev/input/event1")
     -- fake_events is only used for usb plug event so far
-    -- NOTE: usb hotplug event is also available in /tmp/nickel-hardware-status
+    -- NOTE: usb hotplug event is also available in /tmp/nickel-hardware-status (... but only when Nickel is running ;p)
     self.input.open("fake_events")
 
     if not self.needsTouchScreenProbe() then
@@ -367,15 +337,6 @@ function Kobo:init()
     else
         -- if touch probe is required, we postpone EventAdjustHook
         -- initialization to when self:touchScreenProbe is called
-        -- Except we may need bits of EventAdjustHook for stuff to be functional, so,
-        -- re-order things in the most horrible way possible!
-        if self.touch_probe_ev_epoch_time then
-            self.input:registerEventAdjustHook(function(_, ev)
-                probeEvEpochTime(_, ev)
-            end)
-            -- And don't do it again during the real initEventAdjustHooks ;)
-            self.touch_probe_ev_epoch_time = nil
-        end
         self.touchScreenProbe = function()
             -- if user has not set KOBO_TOUCH_MIRRORED yet
             if KOBO_TOUCH_MIRRORED == nil then
@@ -394,6 +355,12 @@ function Kobo:init()
             self:initEventAdjustHooks()
         end
     end
+
+    -- We have no way of querying the current state of the charging LED, so, our only sane choices are:
+    -- * Do nothing
+    -- * Turn it off on startup
+    -- I've chosen the latter, as I find it vaguely saner, more useful, and it matches Nickel's behavior (I think).
+    self:toggleChargingLED(false)
 end
 
 function Kobo:setDateTime(year, month, day, hour, min, sec)
@@ -414,20 +381,24 @@ end
 
 function Kobo:initNetworkManager(NetworkMgr)
     function NetworkMgr:turnOffWifi(complete_callback)
-        koboEnableWifi(0)
+        self:releaseIP()
+        koboEnableWifi(false)
         if complete_callback then
             complete_callback()
         end
     end
 
     function NetworkMgr:turnOnWifi(complete_callback)
-        koboEnableWifi(1)
+        koboEnableWifi(true)
         self:showNetworkMenu(complete_callback)
     end
 
     local net_if = os.getenv("INTERFACE")
     if not net_if then
         net_if = "eth0"
+    end
+    function NetworkMgr:getNetworkInterfaceName()
+        return net_if
     end
     NetworkMgr:setWirelessBackend(
         "wpa_supplicant", {ctrl_interface = "/var/run/wpa_supplicant/" .. net_if})
@@ -444,14 +415,14 @@ function Kobo:initNetworkManager(NetworkMgr)
         os.execute("./restore-wifi-async.sh")
     end
 
-    -- NOTE: Cheap-ass way of checking if WiFi seems to be enabled...
+    -- NOTE: Cheap-ass way of checking if Wi-Fi seems to be enabled...
     --       Since the crux of the issues lies in race-y module unloading, this is perfectly fine for our usage.
     function NetworkMgr:isWifiOn()
         local fd = io.open("/proc/modules", "r")
         if fd then
             local lsmod = fd:read("*all")
             fd:close()
-            -- lsmod is usually empty, unless WiFi or USB is enabled
+            -- lsmod is usually empty, unless Wi-Fi or USB is enabled
             -- We could alternatively check if lfs.attributes("/proc/sys/net/ipv4/conf/" .. os.getenv("INTERFACE"), "mode") == "directory"
             -- c.f., also what Cervantes does via /sys/class/net/eth0/carrier to check if the interface is up.
             -- That said, since we only care about whether *modules* are loaded, this does the job nicely.
@@ -471,7 +442,6 @@ function Kobo:supportsScreensaver() return true end
 local ABS_MT_TRACKING_ID = 57
 local EV_ABS = 3
 local adjustTouchAlyssum = function(self, ev)
-    ev.time = TimeVal:now()
     if ev.type == EV_ABS and ev.code == ABS_MT_TRACKING_ID then
         ev.value = ev.value - 1
     end
@@ -502,12 +472,6 @@ function Kobo:initEventAdjustHooks()
 
     if self.touch_snow_protocol then
         self.input.snow_protocol = true
-    end
-
-    if self.touch_probe_ev_epoch_time then
-        self.input:registerEventAdjustHook(function(_, ev)
-            probeEvEpochTime(_, ev)
-        end)
     end
 
     if self.touch_phoenix_protocol then
@@ -797,6 +761,62 @@ function Kobo:toggleGSensor(toggle)
             self.input:toggleMiscEvNTX(toggle)
         end
     end
+end
+
+function Kobo:toggleChargingLED(toggle)
+    if not self:canToggleChargingLED() then
+        return
+    end
+
+    -- We have no way of querying the current state from the HW!
+    if toggle == nil then
+        return
+    end
+
+    -- NOTE: While most/all Kobos actually have a charging LED, and it can usually be fiddled with in a similar fashion,
+    --       we've seen *extremely* weird behavior in the past when playing with it on older devices (c.f., #5479).
+    --       In fact, Nickel itself doesn't provide this feature on said older devices
+    --       (when it does, it's an option in the Energy saving settings),
+    --       which is why we also limit ourselves to "true" Mk. 7 devices.
+    local f = io.open("/sys/devices/platform/ntx_led/lit", "w")
+    if not f then
+        logger.err("cannot open /sys/devices/platform/ntx_led/lit for writing!")
+        return false
+    end
+
+    -- c.f., strace -fittvyy -e trace=ioctl,file,signal,ipc,desc -s 256 -o /tmp/nickel.log -p $(pidof -s nickel) &
+    -- This was observed on a Forma, so I'm mildly hopeful that it's safe on other Mk. 7 devices ;).
+    if toggle == true then
+        -- NOTE: Technically, Nickel forces a toggle off before that, too.
+        --       But since we do that on startup, it shouldn't be necessary here...
+        f:write("ch 4")
+        f:flush()
+        f:write("cur 1")
+        f:flush()
+        f:write("dc 63")
+        f:flush()
+    else
+        f:write("ch 3")
+        f:flush()
+        f:write("cur 1")
+        f:flush()
+        f:write("dc 0")
+        f:flush()
+        f:write("ch 4")
+        f:flush()
+        f:write("cur 1")
+        f:flush()
+        f:write("dc 0")
+        f:flush()
+        f:write("ch 5")
+        f:flush()
+        f:write("cur 1")
+        f:flush()
+        f:write("dc 0")
+        f:flush()
+    end
+
+    io.close(f)
 end
 
 -------------- device probe ------------

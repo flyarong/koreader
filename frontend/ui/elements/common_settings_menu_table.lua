@@ -45,9 +45,27 @@ if Device:canToggleMassStorage() then
     }
 
     -- mass storage actions
-    common_settings.mass_storage_actions = {
-        text = _("Start USB storage"),
-        callback = function() MassStorage:start() end,
+    common_settings.mass_storage_actions = MassStorage:getActionsMenuTable()
+end
+
+if Device:canToggleChargingLED() then
+    -- Charging LED settings
+    common_settings.charging_led = {
+        text = _("Turn on the power LED when charging"),
+        checked_func = function()
+            return G_reader_settings:nilOrTrue("enable_charging_led")
+        end,
+        callback = function()
+            G_reader_settings:flipNilOrTrue("enable_charging_led")
+        end
+    }
+end
+
+-- Associate OS level file extensions (must be off by default, because we're not associated initially)
+if Device:canAssociateFileExtensions() then
+    common_settings.file_ext_assoc = {
+        text = _("Associate file extensions"),
+        sub_item_table = require("ui/elements/file_ext_assoc"):getSettingsMenuTable()
     }
 end
 
@@ -250,6 +268,24 @@ if Device:isAndroid() then
             callback = function() require("ui/elements/screen_android"):toggleFullscreen() end,
         }
     end
+
+    -- ignore battery optimization
+    if Device.firmware_rev >= 23 then
+        common_settings.ignore_battery_optimizations = {
+            text = _("Battery optimizations"),
+            checked_func = function() return not android.settings.hasPermission("battery") end,
+            callback = function()
+                local text = _([[
+Go to Android battery optimization settings?
+
+You will be prompted with a permission management screen.
+
+Please don't change any settings unless you know what you're doing.]])
+
+                android.settings.requestPermission("battery", text, _("OK"), _("Cancel"))
+            end,
+        }
+    end
 end
 
 if Device:isTouchDevice() then
@@ -338,14 +374,52 @@ common_settings.back_in_filemanager = {
         },
     },
 }
-common_settings.enable_back_history = {
-    text = _("Enable back history"),
-    checked_func = function()
-        return G_reader_settings:nilOrTrue("enable_back_history")
-    end,
-    callback = function()
-        G_reader_settings:flipNilOrTrue("enable_back_history")
-    end,
+common_settings.back_in_reader = {
+    -- All these options are managed by ReaderBack
+    text = _("Back in reader"),
+    sub_item_table = {
+        {
+            text_func = function()
+                local back_to_exit = G_reader_settings:readSetting("back_to_exit") or "prompt"
+                return T(_("Back to exit (%1)"),
+                         back_to_exit_str[back_to_exit][2])
+            end,
+            checked_func = function()
+                return G_reader_settings:readSetting("back_in_reader") == "default"
+            end,
+            callback = function()
+                G_reader_settings:saveSetting("back_in_reader", "default")
+            end,
+        },
+        {
+            text = _("Go to file browser"),
+            checked_func = function()
+                return G_reader_settings:readSetting("back_in_reader") == "filebrowser"
+            end,
+            callback = function()
+                G_reader_settings:saveSetting("back_in_reader", "filebrowser")
+            end,
+        },
+        {
+            text = _("Go to previous location"),
+            checked_func = function()
+                local back_in_reader = G_reader_settings:readSetting("back_in_reader")
+                return back_in_reader == "previous_location" or back_in_reader == nil
+            end,
+            callback = function()
+                G_reader_settings:saveSetting("back_in_reader", "previous_location")
+            end,
+        },
+        {
+            text = _("Go to previous read page"),
+            checked_func = function()
+                return G_reader_settings:readSetting("back_in_reader") == "previous_read_page"
+            end,
+            callback = function()
+                G_reader_settings:saveSetting("back_in_reader", "previous_read_page")
+            end,
+        },
+    },
 }
 if Device:hasKeys() then
     common_settings.invert_page_turn_buttons = {
@@ -409,7 +483,7 @@ common_settings.document = {
                 local interval = G_reader_settings:readSetting("auto_save_settings_interval_minutes")
                 local s_interval
                 if interval == false then
-                    s_interval = "only on close"
+                    s_interval = _("only on close")
                 else
                     s_interval = T(N_("every 1 m", "every %1 m", interval), interval)
                 end

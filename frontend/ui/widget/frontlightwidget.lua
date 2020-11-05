@@ -33,13 +33,11 @@ local FrontLightWidget = InputContainer:new{
     height = nil,
     -- This should stay active during natural light configuration
     is_always_active = true,
-    use_system_fl = false,
     rate = Screen.low_pan_rate and 3 or 30,     -- Widget update rate.
     last_time = TimeVal:new{},                  -- Tracks last update time to prevent update spamming.
 }
 
 function FrontLightWidget:init()
-    self.light_fallback = self.use_system_fl and G_reader_settings:nilOrTrue("light_fallback")
     self.medium_font_face = Font:getFace("ffont")
     self.larger_font_face = Font:getFace("cfont")
     self.light_bar = {}
@@ -60,6 +58,7 @@ function FrontLightWidget:init()
     self.steps = math.min(self.steps, steps_fl)
     self.natural_light = Device:hasNaturalLight()
     self.has_nl_mixer = Device:hasNaturalLightMixer()
+    self.has_nl_api = Device:hasNaturalLightApi()
     -- Handle Warmth separately, because it may use a different scale
     if self.natural_light then
         self.nl_min = self.powerd.fl_warmth_min
@@ -82,7 +81,7 @@ function FrontLightWidget:init()
         margin = button_margin,
         padding = button_padding,
         bordersize = button_bordersize,
-        enabled = not self.light_fallback,
+        enabled = true,
         width = self.button_width,
         show_parent = self,
     }
@@ -132,7 +131,6 @@ function FrontLightWidget:setProgress(num, step, num_warmth)
     local button_group_down = HorizontalGroup:new{ align = "center" }
     local button_group_up = HorizontalGroup:new{ align = "center" }
     local vertical_group = VerticalGroup:new{ align = "center" }
-    self.fl_prog_button.enabled = not self.light_fallback
     local enable_button_plus = true
     local enable_button_minus = true
     if self.natural_light then
@@ -173,7 +171,7 @@ function FrontLightWidget:setProgress(num, step, num_warmth)
         text = "-1",
         margin = Size.margin.small,
         radius = 0,
-        enabled = enable_button_minus and not self.light_fallback,
+        enabled = enable_button_minus,
         width = math.floor(self.screen_width * 0.2),
         show_parent = self,
         callback = function()  self:setProgress(self.fl_cur - 1, step) end,
@@ -182,7 +180,7 @@ function FrontLightWidget:setProgress(num, step, num_warmth)
         text = "+1",
         margin = Size.margin.small,
         radius = 0,
-        enabled = enable_button_plus and not self.light_fallback,
+        enabled = enable_button_plus,
         width = math.floor(self.screen_width * 0.2),
         show_parent = self,
         callback = function() self:setProgress(self.fl_cur + 1, step) end,
@@ -197,7 +195,7 @@ function FrontLightWidget:setProgress(num, step, num_warmth)
         text = _("Min"),
         margin = Size.margin.small,
         radius = 0,
-        enabled = not self.light_fallback,
+        enabled = true,
         width = math.floor(self.screen_width * 0.2),
         show_parent = self,
         callback = function() self:setProgress(self.fl_min+1, step) end, -- min is 1 (use toggle for 0)
@@ -206,7 +204,7 @@ function FrontLightWidget:setProgress(num, step, num_warmth)
         text = _("Max"),
         margin = Size.margin.small,
         radius = 0,
-        enabled = not self.light_fallback,
+        enabled = true,
         width = math.floor(self.screen_width * 0.2),
         show_parent = self,
         callback = function() self:setProgress(self.fl_max, step) end,
@@ -215,7 +213,7 @@ function FrontLightWidget:setProgress(num, step, num_warmth)
         text = _("Toggle"),
         margin = Size.margin.small,
         radius = 0,
-        enabled = not self.light_fallback,
+        enabled = true,
         width = math.floor(self.screen_width * 0.2),
         show_parent = self,
         callback = function()
@@ -244,20 +242,6 @@ function FrontLightWidget:setProgress(num, step, num_warmth)
         -- widgets below.
         table.insert(vertical_group, text_br)
     end
-    local system_level_checkbutton
-    system_level_checkbutton = CheckButton:new{
-        text = _("Use system settings"),
-        checked = self.light_fallback,
-        callback = function()
-            if system_level_checkbutton.checked then
-                self.light_fallback = false
-            else
-                self.light_fallback = true
-            end
-            G_reader_settings:saveSetting("light_fallback", self.light_fallback)
-            self:setProgress(self.fl_cur, step)
-        end,
-    }
     table.insert(button_group_up, button_table_up)
     table.insert(button_group_down, button_table_down)
     table.insert(vertical_group, padding_span)
@@ -267,15 +251,11 @@ function FrontLightWidget:setProgress(num, step, num_warmth)
     table.insert(vertical_group, padding_span)
     table.insert(vertical_group, button_group_down)
     table.insert(vertical_group, padding_span)
-    if self.use_system_fl then
-        table.insert(vertical_group, system_level_checkbutton)
-        table.insert(vertical_group, padding_span)
-    end
     if self.natural_light then
         -- If the device supports natural light, add the widgets for 'warmth',
         -- as well as a 'Configure' button for devices *without* a mixer
         self:addWarmthWidgets(num_warmth, step, vertical_group)
-        if not self.has_nl_mixer then
+        if not self.has_nl_mixer and not self.has_nl_api then
             self.configure_button =  Button:new{
                 text = _("Configure"),
                 margin = Size.margin.small,
@@ -430,64 +410,68 @@ function FrontLightWidget:addWarmthWidgets(num_warmth, step, vertical_group)
             end
         })
 
-    local text_auto_nl = TextBoxWidget:new{
-        --- @todo Implement padding_right (etc.) on TextBoxWidget and remove the two-space hack.
-        text = _("Max. at:") .. "  ",
-        face = self.larger_font_face,
-        alignment = "right",
-        fgcolor = self.powerd.auto_warmth and Blitbuffer.COLOR_BLACK or
-            Blitbuffer.COLOR_DARK_GRAY,
-        width = math.floor(self.screen_width * 0.3),
-    }
-    local text_hour = TextBoxWidget:new{
-        text = " " .. math.floor(self.powerd.max_warmth_hour) .. ":" ..
-            self.powerd.max_warmth_hour % 1 * 6 .. "0",
-        face = self.larger_font_face,
-        alignment = "center",
-        fgcolor =self.powerd.auto_warmth and Blitbuffer.COLOR_BLACK or
-            Blitbuffer.COLOR_DARK_GRAY,
-        width = math.floor(self.screen_width * 0.15),
-    }
-    local button_minus_one_hour = Button:new{
-        text = "−",
-        margin = Size.margin.small,
-        radius = 0,
-        enabled = self.powerd.auto_warmth,
-        width = math.floor(self.screen_width * 0.1),
-        show_parent = self,
-        callback = function()
-            self.powerd.max_warmth_hour =
-                (self.powerd.max_warmth_hour - 1) % 24
-            self.powerd:calculateAutoWarmth()
-            self:setProgress(self.fl_cur, step)
-        end,
-        hold_callback = function()
-            self.powerd.max_warmth_hour =
-                (self.powerd.max_warmth_hour - 0.5) % 24
-            self.powerd:calculateAutoWarmth()
-            self:setProgress(self.fl_cur, step)
-        end,
-    }
-    local button_plus_one_hour = Button:new{
-        text = "+",
-        margin = Size.margin.small,
-        radius = 0,
-        enabled = self.powerd.auto_warmth,
-        width = math.floor(self.screen_width * 0.1),
-        show_parent = self,
-        callback = function()
-            self.powerd.max_warmth_hour =
-                (self.powerd.max_warmth_hour + 1) % 24
-            self.powerd:calculateAutoWarmth()
-            self:setProgress(self.fl_cur, step)
-        end,
-        hold_callback = function()
-            self.powerd.max_warmth_hour =
-                (self.powerd.max_warmth_hour + 0.5) % 24
-            self.powerd:calculateAutoWarmth()
-            self:setProgress(self.fl_cur, step)
-        end,
-    }
+    local text_auto_nl, text_hour, button_minus_one_hour, button_plus_one_hour
+
+    if not self.has_nl_api then
+        text_auto_nl = TextBoxWidget:new{
+            --- @todo Implement padding_right (etc.) on TextBoxWidget and remove the two-space hack.
+            text = _("Max. at:") .. "  ",
+            face = self.larger_font_face,
+            alignment = "right",
+            fgcolor = self.powerd.auto_warmth and Blitbuffer.COLOR_BLACK or
+                Blitbuffer.COLOR_DARK_GRAY,
+            width = math.floor(self.screen_width * 0.3),
+        }
+        text_hour = TextBoxWidget:new{
+            text = " " .. math.floor(self.powerd.max_warmth_hour) .. ":" ..
+                self.powerd.max_warmth_hour % 1 * 6 .. "0",
+            face = self.larger_font_face,
+            alignment = "center",
+            fgcolor =self.powerd.auto_warmth and Blitbuffer.COLOR_BLACK or
+                Blitbuffer.COLOR_DARK_GRAY,
+            width = math.floor(self.screen_width * 0.15),
+        }
+        button_minus_one_hour = Button:new{
+            text = "−",
+            margin = Size.margin.small,
+            radius = 0,
+            enabled = self.powerd.auto_warmth,
+            width = math.floor(self.screen_width * 0.1),
+            show_parent = self,
+            callback = function()
+                self.powerd.max_warmth_hour =
+                    (self.powerd.max_warmth_hour - 1) % 24
+                self.powerd:calculateAutoWarmth()
+                self:setProgress(self.fl_cur, step)
+            end,
+            hold_callback = function()
+                self.powerd.max_warmth_hour =
+                    (self.powerd.max_warmth_hour - 0.5) % 24
+                self.powerd:calculateAutoWarmth()
+                self:setProgress(self.fl_cur, step)
+            end,
+        }
+        button_plus_one_hour = Button:new{
+            text = "+",
+            margin = Size.margin.small,
+            radius = 0,
+            enabled = self.powerd.auto_warmth,
+            width = math.floor(self.screen_width * 0.1),
+            show_parent = self,
+            callback = function()
+                self.powerd.max_warmth_hour =
+                    (self.powerd.max_warmth_hour + 1) % 24
+                self.powerd:calculateAutoWarmth()
+                self:setProgress(self.fl_cur, step)
+            end,
+            hold_callback = function()
+                self.powerd.max_warmth_hour =
+                    (self.powerd.max_warmth_hour + 0.5) % 24
+                self.powerd:calculateAutoWarmth()
+                self:setProgress(self.fl_cur, step)
+            end,
+        }
+    end
 
     table.insert(vertical_group, text_warmth)
     table.insert(button_group_up, button_table_up)
@@ -505,7 +489,10 @@ function FrontLightWidget:addWarmthWidgets(num_warmth, step, vertical_group)
     table.insert(vertical_group, padding_span)
     table.insert(vertical_group, button_group_down)
     table.insert(vertical_group, padding_span)
-    table.insert(vertical_group, auto_nl_group)
+
+    if not self.has_nl_api then
+        table.insert(vertical_group, auto_nl_group)
+    end
 end
 
 function FrontLightWidget:setFrontLightIntensity(num)
@@ -518,13 +505,6 @@ function FrontLightWidget:setFrontLightIntensity(num)
             self.powerd:toggleFrontlight()
         else
             self.powerd:setIntensity(set_fl)
-        end
-
-        if not self.light_fallback and self.fl_cur >= 0 then
-            G_reader_settings:saveSetting("fl_last_level", self.fl_cur * 10)
-        elseif self.light_fallback then
-            G_reader_settings:saveSetting("fl_last_level", nil)
-            Device:setScreenBrightness(-1)
         end
 
         -- get back the real level (different from set_fl if untoggle)

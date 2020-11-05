@@ -2,10 +2,19 @@
 export LC_ALL="en_US.UTF-8"
 
 # Compute our working directory in an extremely defensive manner
-KOREADER_DIR="$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd -P)"
+SCRIPT_DIR="$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd -P)"
+# NOTE: We need to remember the *actual* KOREADER_DIR, not the relocalized version in /tmp...
+export KOREADER_DIR="${KOREADER_DIR:-${SCRIPT_DIR}}"
 
 # We rely on starting from our working directory, and it needs to be set, sane and absolute.
 cd "${KOREADER_DIR:-/dev/null}" || exit
+
+# To make USBMS behave, relocalize ourselves outside of onboard
+if [ "${SCRIPT_DIR}" != "/tmp" ]; then
+    cp -pf "${0}" "/tmp/koreader.sh"
+    chmod 777 "/tmp/koreader.sh"
+    exec "/tmp/koreader.sh" "$@"
+fi
 
 # Attempt to switch to a sensible CPUFreq governor when that's not already the case...
 IFS= read -r current_cpufreq_gov <"/sys/devices/system/cpu/cpu0/cpufreq/scaling_governor"
@@ -101,16 +110,38 @@ if [ "${VIA_NICKEL}" = "true" ]; then
     if [ "${FROM_NICKEL}" = "false" ]; then
         # Siphon a few things from nickel's env (namely, stuff exported by rcS *after* on-animator.sh has been launched)...
         # shellcheck disable=SC2046
-        export $(grep -s -E -e '^(DBUS_SESSION_BUS_ADDRESS|NICKEL_HOME|WIFI_MODULE|LANG|WIFI_MODULE_PATH|INTERFACE)=' "/proc/$(pidof -s nickel)/environ")
+        export $(grep -s -E -e '^(DBUS_SESSION_BUS_ADDRESS|NICKEL_HOME|WIFI_MODULE|LANG|INTERFACE)=' "/proc/$(pidof -s nickel)/environ")
         # NOTE: Quoted variant, w/ the busybox RS quirk (c.f., https://unix.stackexchange.com/a/125146):
-        #eval "$(awk -v 'RS="\0"' '/^(DBUS_SESSION_BUS_ADDRESS|NICKEL_HOME|WIFI_MODULE|LANG|WIFI_MODULE_PATH|INTERFACE)=/{gsub("\047", "\047\\\047\047"); print "export \047" $0 "\047"}' "/proc/$(pidof -s nickel)/environ")"
+        #eval "$(awk -v 'RS="\0"' '/^(DBUS_SESSION_BUS_ADDRESS|NICKEL_HOME|WIFI_MODULE|LANG|INTERFACE)=/{gsub("\047", "\047\\\047\047"); print "export \047" $0 "\047"}' "/proc/$(pidof -s nickel)/environ")"
     fi
 
     # Flush disks, might help avoid trashing nickel's DB...
     sync
     # And we can now stop the full Kobo software stack
     # NOTE: We don't need to kill KFMon, it's smart enough not to allow running anything else while we're up
-    killall -TERM nickel hindenburg sickel fickel adobehost fmon 2>/dev/null
+    # NOTE: We kill Nickel's master dhcpcd daemon on purpose,
+    #       as we want to be able to use our own per-if processes w/ custom args later on.
+    #       A SIGTERM does not break anything, it'll just prevent automatic lease renewal until the time
+    #       KOReader actually sets the if up itself (i.e., it'll do)...
+    killall -q -TERM nickel hindenburg sickel fickel adobehost dhcpcd-dbus dhcpcd fmon
+
+    # Wait for Nickel to die... (oh, procps with killall -w, how I miss you...)
+    kill_timeout=0
+    while pkill -0 nickel; do
+        # Stop waiting after 4s
+        if [ ${kill_timeout} -ge 15 ]; then
+            break
+        fi
+        usleep 250000
+        kill_timeout=$((kill_timeout + 1))
+    done
+    # Remove Nickel's FIFO to avoid udev & udhcpc scripts hanging on open() on it...
+    rm -f /tmp/nickel-hardware-status
+
+    # We don't need to grab input devices (unless MiniClock is running, in which case that neatly inhibits it while we run).
+    if [ ! -d "/tmp/MiniClock" ]; then
+        export KO_DONT_GRAB_INPUT="true"
+    fi
 fi
 
 # fallback for old fmon, KFMon and advboot users (-> if no args were passed to the script, start the FM)
@@ -131,7 +162,7 @@ if [ -z "${PRODUCT}" ]; then
     export PRODUCT
 fi
 
-# PLATFORM is used in koreader for the path to the WiFi drivers (as well as when restarting nickel)
+# PLATFORM is used in koreader for the path to the Wi-Fi drivers (as well as when restarting nickel)
 if [ -z "${PLATFORM}" ]; then
     # shellcheck disable=SC2046
     export $(grep -s -e '^PLATFORM=' "/proc/$(pidof -s udevd)/environ")
@@ -156,7 +187,6 @@ if [ -z "${INTERFACE}" ]; then
     INTERFACE="eth0"
     export INTERFACE
 fi
-# end of value check of PLATFORM
 
 # We'll want to ensure Portrait rotation to allow us to use faster blitting codepaths @ 8bpp,
 # so remember the current one before fbdepth does its thing.
@@ -209,6 +239,16 @@ ko_do_fbdepth() {
     fi
 }
 
+# Ensure we start with a valid nameserver in resolv.conf, otherwise we're stuck with broken name resolution (#6421, #6424).
+# Fun fact: this wouldn't be necessary if Kobo were using a non-prehistoric glibc... (it was fixed in glibc 2.26).
+ko_do_dns() {
+    # If there aren't any servers listed, append CloudFlare's
+    if ! grep -q '^nameserver' "/etc/resolv.conf"; then
+        echo "# Added by KOReader because your setup is broken" >>"/etc/resolv.conf"
+        echo "nameserver 1.1.1.1" >>"/etc/resolv.conf"
+    fi
+}
+
 # Remount the SD card RW if it's inserted and currently RO
 if awk '$4~/(^|,)ro($|,)/' /proc/mounts | grep ' /mnt/sd '; then
     mount -o remount,rw /mnt/sd
@@ -223,22 +263,26 @@ fi
 CRASH_COUNT=0
 CRASH_TS=0
 CRASH_PREV_TS=0
+# List of supported special return codes
+KO_RC_RESTART=85
+KO_RC_USBMS=86
 # Because we *want* an initial fbdepth pass ;).
-RETURN_VALUE=85
+RETURN_VALUE=${KO_RC_RESTART}
 while [ ${RETURN_VALUE} -ne 0 ]; do
-    # 85 is what we return when asking for a KOReader restart
-    if [ ${RETURN_VALUE} -eq 85 ]; then
+    if [ ${RETURN_VALUE} -eq ${KO_RC_RESTART} ]; then
         # Do an update check now, so we can actually update KOReader via the "Restart KOReader" menu entry ;).
         ko_update_check
         # Do or double-check the fb depth switch, or restore original bitdepth if requested
         ko_do_fbdepth
+        # Make sure we have a sane resolv.conf
+        ko_do_dns
     fi
 
     ./reader.lua "${args}" >>crash.log 2>&1
     RETURN_VALUE=$?
 
     # Did we crash?
-    if [ ${RETURN_VALUE} -ne 0 ] && [ ${RETURN_VALUE} -ne 85 ]; then
+    if [ ${RETURN_VALUE} -ne 0 ] && [ ${RETURN_VALUE} -ne ${KO_RC_RESTART} ] && [ ${RETURN_VALUE} -ne ${KO_RC_USBMS} ]; then
         # Increment the crash counter
         CRASH_COUNT=$((CRASH_COUNT + 1))
         CRASH_TS=$(date +'%s')
@@ -273,11 +317,11 @@ while [ ${RETURN_VALUE} -ne 0 ]; do
         fi
         # U+1F4A3, the hard way, because we can't use \u or \U escape sequences...
         # shellcheck disable=SC2039
-        ./fbink -q -b -O -m -t regular=./fonts/freefont/FreeSerif.ttf,px=${bombHeight},top=${bombMargin} $'\xf0\x9f\x92\xa3'
+        ./fbink -q -b -O -m -t regular=./fonts/freefont/FreeSerif.ttf,px=${bombHeight},top=${bombMargin} -- $'\xf0\x9f\x92\xa3'
         # And then print the tail end of the log on the bottom of the screen...
         crashLog="$(tail -n 25 crash.log | sed -e 's/\t/    /g')"
         # The idea for the margins being to leave enough room for an fbink -Z bar, small horizontal margins, and a font size based on what 6pt looked like @ 265dpi
-        ./fbink -q -b -O -t regular=./fonts/droid/DroidSansMono.ttf,top=$((viewHeight / 2 + FONTH * 2 + FONTH / 2)),left=$((viewWidth / 60)),right=$((viewWidth / 60)),px=$((viewHeight / 64)) "${crashLog}"
+        ./fbink -q -b -O -t regular=./fonts/droid/DroidSansMono.ttf,top=$((viewHeight / 2 + FONTH * 2 + FONTH / 2)),left=$((viewWidth / 60)),right=$((viewWidth / 60)),px=$((viewHeight / 64)) -- "${crashLog}"
         # So far, we hadn't triggered an actual screen refresh, do that now, to make sure everything is bundled in a single flashing refresh.
         ./fbink -q -f -s
         # Cue a lemming's faceplant sound effect!
@@ -320,6 +364,83 @@ while [ ${RETURN_VALUE} -ne 0 ]; do
         # Reset the crash counter if that was a sane exit/restart
         CRASH_COUNT=0
     fi
+
+    if [ ${RETURN_VALUE} -eq ${KO_RC_USBMS} ]; then
+        # User requested an USBMS session, setup the tool outside of onboard
+        USBMS_HOME="/mnt/usbms"
+        mkdir -p "${USBMS_HOME}"
+        # We're using a custom tmpfs in case /tmp is too small (mainly because we may need to import a large CJK font in there...)
+        if ! mount -t tmpfs tmpfs ${USBMS_HOME} -o defaults,size=32M,mode=1777,noatime; then
+            echo "Failed to create the USBMS tmpfs, restarting KOReader . . ." >>crash.log 2>&1
+            continue
+        fi
+
+        if ! ./tar xzf "./data/KoboUSBMS.tar.gz" -C "${USBMS_HOME}"; then
+            echo "Couldn't unpack KoboUSBMS, restarting KOReader . . ." >>crash.log 2>&1
+            if ! umount "${USBMS_HOME}"; then
+                echo "Couldn't unmount the USBMS tmpfs, shutting down in 30 sec!" >>crash.log 2>&1
+                sleep 30
+                poweroff -f
+            fi
+            rm -rf "${USBMS_HOME}"
+            continue
+        fi
+
+        # Then siphon KOReader's language for i18n...
+        if grep -q '\["language"\]' 'settings.reader.lua' 2>/dev/null; then
+            usbms_lang="$(grep '\["language"\]' 'settings.reader.lua' | cut -d'"' -f4)"
+        else
+            usbms_lang="C"
+        fi
+
+        # If the language is CJK, copy the CJK font, too...
+        case "${usbms_lang}" in
+            ja* | ko* | zh*)
+                cp -pf "${KOREADER_DIR}/fonts/noto/NotoSansCJKsc-Regular.otf" "${USBMS_HOME}/resources/fonts/NotoSansCJKsc-Regular.otf"
+                ;;
+        esac
+
+        # Here we go!
+        if ! cd "${USBMS_HOME}"; then
+            echo "Couldn't chdir to ${USBMS_HOME}, restarting KOReader . . ." >>crash.log 2>&1
+            if ! umount "${USBMS_HOME}"; then
+                echo "Couldn't unmount the USBMS tmpfs, shutting down in 30 sec!" >>crash.log 2>&1
+                sleep 30
+                poweroff -f
+            fi
+            rm -rf "${USBMS_HOME}"
+            continue
+        fi
+        env LANGUAGE="${usbms_lang}" ./usbms
+        fail=$?
+        if [ ${fail} -ne 0 ]; then
+            # NOTE: Early init failures return KO_RC_USBMS,
+            #       to allow simply restarting KOReader when we know the integrity of onboard hasn't been compromised...
+            if [ ${fail} -eq ${KO_RC_USBMS} ]; then
+                echo "KoboUSBMS failed to setup an USBMS session, restarting KOReader . . ." >>"${KOREADER_DIR}/crash.log" 2>&1
+            else
+                # Hu, oh, something went wrong... Stay around for 90s (enough time to look at the syslog over Wi-Fi), and then shutdown.
+                logger -p "DAEMON.CRIT" -t "koreader.sh[$$]" "USBMS session failed (${fail}), shutting down in 90 sec!"
+                sleep 90
+                poweroff -f
+            fi
+        fi
+
+        # Jump back to the right place, and keep on trucking
+        if ! cd "${KOREADER_DIR}"; then
+            logger -p "DAEMON.CRIT" -t "koreader.sh[$$]" "Couldn't chdir back to KOREADER_DIR (${KOREADER_DIR}), shutting down in 30 sec!"
+            sleep 30
+            poweroff -f
+        fi
+
+        # Tear down the tmpfs...
+        if ! umount "${USBMS_HOME}"; then
+            logger -p "DAEMON.CRIT" -t "koreader.sh[$$]" "Couldn't unmount the USBMS tmpfs, shutting down in 30 sec!"
+            sleep 30
+            poweroff -f
+        fi
+        rm -rf "${USBMS_HOME}"
+    fi
 done
 
 # Restore original fb bitdepth if need be...
@@ -359,5 +480,8 @@ else
         /sbin/reboot
     fi
 fi
+
+# Wipe the clones on exit
+rm -f "/tmp/koreader.sh"
 
 exit ${RETURN_VALUE}

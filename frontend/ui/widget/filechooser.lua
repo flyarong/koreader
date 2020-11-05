@@ -11,26 +11,12 @@ local ffi = require("ffi")
 local lfs = require("libs/libkoreader-lfs")
 local ffiUtil = require("ffi/util")
 local T = ffiUtil.template
-local C = ffi.C
 local _ = require("gettext")
 local N_ = _.ngettext
 local Screen = Device.screen
 local util = require("util")
 local getFileNameSuffix = util.getFileNameSuffix
 local getFriendlySize = util.getFriendlySize
-
-ffi.cdef[[
-int strcoll (const char *str1, const char *str2);
-]]
-
--- string sort function respecting LC_COLLATE
-local function strcoll(str1, str2)
-    return C.strcoll(str1, str2) < 0
-end
-
-local function kobostrcoll(str1, str2)
-    return str1 < str2
-end
 
 local FileChooser = Menu:extend{
     cface = Font:getFace("smallinfofont"),
@@ -47,6 +33,11 @@ local FileChooser = Menu:extend{
     goto_letter = true,
 }
 
+-- Cache of content we knew of for directories that are not readable
+-- (i.e. /storage/emulated/ on Android that we can meet when coming
+-- from readable /storage/emulated/0/ - so we know it contains "0/")
+local unreadable_dir_content = {}
+
 function FileChooser:init()
     self.width = Screen:getWidth()
     -- common dir filter
@@ -60,6 +51,7 @@ function FileChooser:init()
         -- lfs.dir directory without permission will give error
         local ok, iter, dir_obj = pcall(lfs.dir, path)
         if ok then
+            unreadable_dir_content[path] = nil
             for f in iter, dir_obj do
                 if count_only then
                     if self.dir_filter(f) and ((not self.show_hidden and not util.stringStartsWith(f, "."))
@@ -101,27 +93,28 @@ function FileChooser:init()
                     end
                 end
             end
+        else -- error, probably "permission denied"
+            if unreadable_dir_content[path] then
+                -- Add this dummy item that will be replaced with a message
+                -- by genItemTableFromPath()
+                table.insert(dirs, {
+                    name = "./.",
+                    fullpath = path,
+                    attr = lfs.attributes(path),
+                })
+                -- If we knew about some content (if we had come up from them
+                -- to this directory), have them shown
+                for k, v in pairs(unreadable_dir_content[path]) do
+                    if v.attr and v.attr.mode == "directory" then
+                        table.insert(dirs, v)
+                    else
+                        table.insert(files, v)
+                    end
+                end
+            end
         end
     end
 
-    local strcoll_func = strcoll
-    -- circumvent string collating in Kobo devices. See issue koreader/koreader#686
-    if Device:isKobo() then
-        strcoll_func = kobostrcoll
-    end
-    self.strcoll = function(a, b)
-        if a == nil and b == nil then
-            return false
-        elseif a == nil then
-            return true
-        elseif b == nil then
-            return false
-        elseif DALPHA_SORT_CASE_INSENSITIVE then
-            return strcoll_func(string.lower(a), string.lower(b))
-        else
-            return strcoll_func(a, b)
-        end
-    end
     self.item_table = self:genItemTableFromPath(self.path)
     Menu.init(self) -- call parent's init()
 end
@@ -136,7 +129,7 @@ function FileChooser:genItemTableFromPath(path)
     local sorting
     if self.collate == "strcoll" then
         sorting = function(a, b)
-            return self.strcoll(a.name, b.name)
+            return ffiUtil.strcoll(a.name, b.name)
         end
     elseif self.collate == "access" then
         sorting = function(a, b)
@@ -163,9 +156,9 @@ function FileChooser:genItemTableFromPath(path)
     elseif self.collate == "type" then
         sorting = function(a, b)
             if a.suffix == nil and b.suffix == nil then
-                return self.strcoll(a.name, b.name)
+                return ffiUtil.strcoll(a.name, b.name)
             else
-                return self.strcoll(a.suffix, b.suffix)
+                return ffiUtil.strcoll(a.suffix, b.suffix)
             end
         end
     elseif self.collate == "percent_unopened_first" or self.collate == "percent_unopened_last" then
@@ -236,6 +229,8 @@ function FileChooser:genItemTableFromPath(path)
             text = up_folder_arrow
         elseif dir.name == "." then -- possible with show_current_dir_for_hold
             text = _("Long-press to select current directory")
+        elseif dir.name == "./." then -- added as content of an unreadable directory
+            text = _("Current directory not readable. Some content may not be shown.")
         else
             text = dir.name.."/"
             bidi_wrap_func = BD.directory
@@ -277,7 +272,7 @@ function FileChooser:genItemTableFromPath(path)
     if self.collate == "strcoll_mixed" then
         sorting = function(a, b)
             if b.text == up_folder_arrow then return false end
-            return self.strcoll(a.text, b.text)
+            return ffiUtil.strcoll(a.text, b.text)
         end
         if self.reverse_collate then
             local sorting_unreversed = sorting
@@ -326,6 +321,19 @@ function FileChooser:changeToPath(path, focused_path)
 
     if focused_path then
         self.focused_path = focused_path
+        -- We know focused_path is a child of path. In case path is
+        -- not a readable directory, we can have focused_path shown,
+        -- to allow the user to go back in it
+        if not unreadable_dir_content[path] then
+            unreadable_dir_content[path] = {}
+        end
+        if not unreadable_dir_content[path][focused_path] then
+            unreadable_dir_content[path][focused_path] = {
+                name = focused_path:sub(#path+2),
+                fullpath = focused_path,
+                attr = lfs.attributes(focused_path),
+            }
+        end
     end
 
     self:refreshPath()
@@ -333,7 +341,7 @@ function FileChooser:changeToPath(path, focused_path)
 end
 
 function FileChooser:onFolderUp()
-    self:changeToPath(string.format("%s/..", self.path))
+    self:changeToPath(string.format("%s/..", self.path), self.path)
 end
 
 function FileChooser:changePageToPath(path)
@@ -415,7 +423,7 @@ function FileChooser:getNextFile(curr_file)
     return next_file
 end
 
-function FileChooser:showSetProviderButtons(file, filemanager_instance, reader_ui)
+function FileChooser:showSetProviderButtons(file, filemanager_instance, reader_ui, one_time_providers)
     local __, filename_pure = util.splitFilePathName(file)
     local filename_suffix = util.getFileNameSuffix(file)
 
@@ -446,6 +454,17 @@ function FileChooser:showSetProviderButtons(file, filemanager_instance, reader_u
             },
         })
     end
+    if one_time_providers and #one_time_providers > 0 then
+        for ___, provider in ipairs(one_time_providers) do
+            provider.one_time_provider = true
+            table.insert(radio_buttons, {
+                {
+                    text = provider.provider_name,
+                    provider = provider,
+                },
+            })
+        end
+    end
 
     table.insert(buttons, {
         {
@@ -459,6 +478,11 @@ function FileChooser:showSetProviderButtons(file, filemanager_instance, reader_u
             is_enter_default = true,
             callback = function()
                 local provider = self.set_provider_dialog.radio_button_table.checked_button.provider
+                if provider.one_time_provider then
+                    UIManager:close(self.set_provider_dialog)
+                    provider.callback()
+                    return
+                end
 
                 -- always for this file
                 if self.set_provider_dialog._check_file_button.checked then

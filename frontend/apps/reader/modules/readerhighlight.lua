@@ -30,7 +30,10 @@ function ReaderHighlight:setupTouchZones()
     self.onGesture = nil
 
     if not Device:isTouchDevice() then return end
-
+    local hold_pan_rate = G_reader_settings:readSetting("hold_pan_rate")
+    if not hold_pan_rate then
+        hold_pan_rate = Screen.low_pan_rate and 5.0 or 30.0
+    end
     self.ui:registerTouchZones({
         {
             id = "readerhighlight_tap",
@@ -76,7 +79,7 @@ function ReaderHighlight:setupTouchZones()
         {
             id = "readerhighlight_hold_pan",
             ges = "hold_pan",
-            rate = 2.0,
+            rate = hold_pan_rate,
             screen_zone = {
                 ratio_x = 0, ratio_y = 0, ratio_w = 1, ratio_h = 1,
             },
@@ -95,6 +98,12 @@ function ReaderHighlight:addToMainMenu(menu_items)
         text = _("Highlighting"),
         sub_item_table = self:genHighlightDrawerMenu(),
     }
+    if self.document.info.has_pages then
+        menu_items.panel_zoom_options = {
+            text = _("Panel zoom (manga/comic)"),
+            sub_item_table = self:genPanelZoomMenu(),
+        }
+    end
     menu_items.translation_settings = Translator:genSettingsMenu()
 end
 
@@ -103,6 +112,41 @@ local highlight_style = {
     underscore = _("Underline"),
     invert = _("Invert"),
 }
+
+local function getPanelZoomSupportedExt()
+    local default_supported_ext = {
+        cbz = true,
+        cbt = true,
+    }
+    return G_reader_settings:readSetting("panel_zoom_ext") or default_supported_ext
+end
+
+local function isPanelZoomSupported(file)
+    local filetype = util.getFileNameSuffix(file)
+    local supported_filetypes = getPanelZoomSupportedExt()
+    return supported_filetypes[filetype]
+end
+
+function ReaderHighlight:genPanelZoomMenu()
+    return {
+        {
+            text = _("Allow panel zoom"),
+            checked_func = function()
+                return self.panel_zoom_enabled
+            end,
+            callback = function()
+                self:onTogglePanelZoomSetting()
+            end,
+            hold_callback = function()
+                local ext = util.getFileNameSuffix(self.ui.document.file)
+                local supported_ext = getPanelZoomSupportedExt()
+                supported_ext[ext] = not supported_ext[ext]
+                G_reader_settings:saveSetting("panel_zoom_ext", supported_ext)
+            end,
+            separator = true,
+        },
+    }
+end
 
 function ReaderHighlight:genHighlightDrawerMenu()
     local get_highlight_style = function(style)
@@ -198,6 +242,18 @@ local function inside_box(pos, box)
             return true
         end
     end
+end
+
+local function cleanupSelectedText(text)
+    -- Trim spaces and new lines at start and end
+    text = text:gsub("^[\n%s]*", "")
+    text = text:gsub("[\n%s]*$", "")
+    -- Trim spaces around newlines
+    text = text:gsub("%s*\n%s*", "\n")
+    -- Trim consecutive spaces (that would probably have collapsed
+    -- in rendered CreDocuments)
+    text = text:gsub("%s%s+", " ")
+    return text
 end
 
 function ReaderHighlight:onTapPageSavedHighlight(ges)
@@ -324,7 +380,7 @@ function ReaderHighlight:updateHighlight(page, index, side, direction, move_by_c
     local new_end = self.view.highlight.saved[page][index].pos1
     local new_text = self.ui.document:getTextFromXPointers(new_beginning, new_end)
     local new_chapter = self.ui.toc:getTocTitleByPage(new_beginning)
-    self.view.highlight.saved[page][index].text = new_text
+    self.view.highlight.saved[page][index].text = cleanupSelectedText(new_text)
     self.view.highlight.saved[page][index].chapter = new_chapter
     local new_highlight = self.view.highlight.saved[page][index]
     self.ui.bookmark:updateBookmark({
@@ -468,7 +524,7 @@ function ReaderHighlight:onShowHighlightMenu()
                 text = C_("Text", "Copy"),
                 enabled = Device:hasClipboard(),
                 callback = function()
-                    Device.input.setClipboardText(self.selected_text.text)
+                    Device.input.setClipboardText(cleanupSelectedText(self.selected_text.text))
                 end,
             },
             {
@@ -537,7 +593,7 @@ function ReaderHighlight:onShowHighlightMenu()
             {
                 text = _("Share text"),
                 callback = function()
-                    local text = self.selected_text.text
+                    local text = cleanupSelectedText(self.selected_text.text)
                     -- call self:onClose() before calling the android framework
                     self:onClose()
                     Device.doShareText(text)
@@ -561,7 +617,36 @@ function ReaderHighlight:_resetHoldTimer(clear)
     end
 end
 
+function ReaderHighlight:onTogglePanelZoomSetting(arg, ges)
+    if not self.document.info.has_pages then return end
+    self.panel_zoom_enabled = not self.panel_zoom_enabled
+end
+
+function ReaderHighlight:onPanelZoom(arg, ges)
+    self:clear()
+    local hold_pos = self.view:screenToPageTransform(ges.pos)
+    if not hold_pos then return false end -- outside page boundary
+    local rect = self.ui.document:getPanelFromPage(hold_pos.page, hold_pos)
+    if not rect then return false end -- panel not found, return
+    local image = self.ui.document:getPagePart(hold_pos.page, rect, 0)
+
+    if image then
+        local ImageViewer = require("ui/widget/imageviewer")
+        local imgviewer = ImageViewer:new{
+            image = image,
+            with_title_bar = false,
+            fullscreen = true,
+        }
+        UIManager:show(imgviewer)
+    end
+    return true
+end
+
 function ReaderHighlight:onHold(arg, ges)
+    if self.document.info.has_pages and self.panel_zoom_enabled then
+        return self:onPanelZoom(arg, ges)
+    end
+
     -- disable hold gesture if highlighting is disabled
     if self.view.highlight.disabled then return false end
     self:clear() -- clear previous highlight (delayed clear may not have done it yet)
@@ -776,7 +861,7 @@ No OCR results or no language data.
 
 KOReader has a build-in OCR engine for recognizing words in scanned PDF and DjVu documents. In order to use OCR in scanned pages, you need to install tesseract trained data for your document language.
 
-You can download language data files for version 3.04 from https://github.com/tesseract-ocr/tesseract/wiki/Data-Files
+You can download language data files for version 3.04 from https://tesseract-ocr.github.io/tessdoc/Data-Files
 
 Copy the language data files for Tesseract 3.04 (e.g., eng.traineddata for English and spa.traineddata for Spanish) into koreader/data/tessdata]])
 
@@ -1068,7 +1153,7 @@ function ReaderHighlight:onUnhighlight(bookmark_item)
         datetime = bookmark_item.datetime
     else -- called from DictQuickLookup Unhighlight button
         page = self.hold_pos.page
-        sel_text = self.selected_text.text
+        sel_text = cleanupSelectedText(self.selected_text.text)
         sel_pos0 = self.selected_text.pos0
     end
     if self.ui.document.info.has_pages then -- We can safely use page
@@ -1131,7 +1216,7 @@ function ReaderHighlight:getHighlightBookmarkItem()
             pos0 = self.selected_text.pos0,
             pos1 = self.selected_text.pos1,
             datetime = datetime,
-            notes = self.selected_text.text,
+            notes = cleanupSelectedText(self.selected_text.text),
             highlighted = true,
             chapter = chapter_name,
         }
@@ -1153,7 +1238,7 @@ function ReaderHighlight:saveHighlight()
         local chapter_name = self.ui.toc:getTocTitleByPage(pg_or_xp)
         local hl_item = {
             datetime = datetime,
-            text = self.selected_text.text,
+            text = cleanupSelectedText(self.selected_text.text),
             pos0 = self.selected_text.pos0,
             pos1 = self.selected_text.pos1,
             pboxes = self.selected_text.pboxes,
@@ -1225,7 +1310,7 @@ end
 
 function ReaderHighlight:lookupWikipedia()
     if self.selected_text then
-        self.ui:handleEvent(Event:new("LookupWikipedia", self.selected_text.text))
+        self.ui:handleEvent(Event:new("LookupWikipedia", cleanupSelectedText(self.selected_text.text)))
     end
 end
 
@@ -1233,7 +1318,7 @@ function ReaderHighlight:onHighlightSearch()
     logger.dbg("search highlight")
     self:highlightFromHoldPos()
     if self.selected_text then
-        local text = util.stripPunctuation(self.selected_text.text)
+        local text = util.stripPunctuation(cleanupSelectedText(self.selected_text.text))
         self.ui:handleEvent(Event:new("ShowSearchDialog", text))
     end
 end
@@ -1242,7 +1327,7 @@ function ReaderHighlight:onHighlightDictLookup()
     logger.dbg("dictionary lookup highlight")
     self:highlightFromHoldPos()
     if self.selected_text then
-        self.ui:handleEvent(Event:new("LookupWord", self.selected_text.text))
+        self.ui:handleEvent(Event:new("LookupWord", cleanupSelectedText(self.selected_text.text)))
     end
 end
 
@@ -1283,11 +1368,24 @@ function ReaderHighlight:onReadSettings(config)
         disable_highlight = G_reader_settings:readSetting("highlight_disabled") or false
     end
     self.view.highlight.disabled = disable_highlight
+
+    -- panel zoom settings isn't supported in EPUB
+    if self.document.info.has_pages then
+        self.panel_zoom_enabled = config:readSetting("panel_zoom_enabled")
+        if self.panel_zoom_enabled == nil then
+            self.panel_zoom_enabled = isPanelZoomSupported(self.ui.document.file)
+        end
+    end
+end
+
+function ReaderHighlight:onUpdateHoldPanRate()
+    self:setupTouchZones()
 end
 
 function ReaderHighlight:onSaveSettings()
     self.ui.doc_settings:saveSetting("highlight_drawer", self.view.highlight.saved_drawer)
     self.ui.doc_settings:saveSetting("highlight_disabled", self.view.highlight.disabled)
+    self.ui.doc_settings:saveSetting("panel_zoom_enabled", self.panel_zoom_enabled)
 end
 
 function ReaderHighlight:onClose()

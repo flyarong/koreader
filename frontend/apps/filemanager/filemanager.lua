@@ -29,7 +29,6 @@ local PluginLoader = require("pluginloader")
 local ReadCollection = require("readcollection")
 local ReaderDeviceStatus = require("apps/reader/modules/readerdevicestatus")
 local ReaderDictionary = require("apps/reader/modules/readerdictionary")
-local ReaderGesture = require("apps/reader/modules/readergesture")
 local ReaderUI = require("apps/reader/readerui")
 local ReaderWikipedia = require("apps/reader/modules/readerwikipedia")
 local Screenshoter = require("ui/widget/screenshoter")
@@ -46,7 +45,7 @@ local util = require("util")
 local _ = require("gettext")
 local C_ = _.pgettext
 local Screen = Device.screen
-local T = require("ffi/util").template
+local T = BaseUtil.template
 
 local FileManager = InputContainer:extend{
     title = _("KOReader"),
@@ -357,10 +356,19 @@ function FileManager:init()
             table.insert(buttons, {
                 {
                     text = _("Open with…"),
-                    enabled = DocumentRegistry:getProviders(file) == nil or #(DocumentRegistry:getProviders(file)) > 1,
+                    enabled = DocumentRegistry:getProviders(file) == nil or #(DocumentRegistry:getProviders(file)) > 1 or fileManager.texteditor,
                     callback = function()
                         UIManager:close(self.file_dialog)
-                        self:showSetProviderButtons(file, FileManager.instance, ReaderUI)
+                        local one_time_providers = {}
+                        if fileManager.texteditor then
+                            table.insert(one_time_providers, {
+                                provider_name = _("Text editor"),
+                                callback = function()
+                                    fileManager.texteditor:checkEditFile(file)
+                                end,
+                            })
+                        end
+                        self:showSetProviderButtons(file, FileManager.instance, ReaderUI, one_time_providers)
                     end,
                 },
                 {
@@ -482,10 +490,6 @@ function FileManager:init()
         end
     end
 
-    if Device:isTouchDevice() then
-        table.insert(self, ReaderGesture:new{ ui = self })
-    end
-
     if Device:hasWifiToggle() then
         local NetworkListener = require("ui/network/networklistener")
         table.insert(self, NetworkListener:new{ ui = self })
@@ -493,8 +497,12 @@ function FileManager:init()
 
     if Device:hasKeys() then
         self.key_events.Home = { {"Home"}, doc = "go home" }
-        --Override the menu.lua way of handling the back key
+        -- Override the menu.lua way of handling the back key
         self.file_chooser.key_events.Back = { {"Back"}, doc = "go back" }
+        if not Device:hasFewKeys() then
+            -- Also remove the handler assigned to the "Back" key by menu.lua
+            self.file_chooser.key_events.Close = nil
+        end
     end
 
     self:handleEvent(Event:new("SetDimensions", self.dimen))
@@ -648,6 +656,7 @@ function FileManager:tapPlus()
 end
 
 function FileManager:reinit(path, focused_file)
+    UIManager:flushSettings()
     self.dimen = Screen:getSize()
     -- backup the root path and path items
     self.root_path = path or self.file_chooser.path
@@ -987,13 +996,13 @@ function FileManager:getSortingMenuTable()
         end,
         sub_item_table = {
             set_collate_table("strcoll"),
+            set_collate_table("numeric"),
             set_collate_table("strcoll_mixed"),
             set_collate_table("access"),
             set_collate_table("change"),
             set_collate_table("modification"),
             set_collate_table("size"),
             set_collate_table("type"),
-            set_collate_table("numeric"),
             {
                 text_func =  get_collate_percent,
                 checked_func = function()
@@ -1014,6 +1023,7 @@ function FileManager:getStartWithMenuTable()
     local start_withs = {
         filemanager = {_("file browser"), _("Start with file browser")},
         history = {_("history"), _("Start with history")},
+        favorites = {_("favorites"), _("Start with favorites")},
         folder_shortcuts = {_("folder shortcuts"), _("Start with folder shortcuts")},
         last = {_("last file"), _("Start with last file")},
     }
@@ -1039,6 +1049,7 @@ function FileManager:getStartWithMenuTable()
         sub_item_table = {
             set_sw_table("filemanager"),
             set_sw_table("history"),
+            set_sw_table("favorites"),
             set_sw_table("folder_shortcuts"),
             set_sw_table("last"),
         }

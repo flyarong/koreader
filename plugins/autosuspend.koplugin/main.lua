@@ -1,6 +1,11 @@
 local Device = require("device")
 
-if not Device:isCervantes() and not Device:isKobo() and not Device:isSDL() and not Device:isSonyPRSTUX() then
+if not Device:isCervantes() and
+    not Device:isKobo() and
+    not Device:isRemarkable() and
+    not Device:isSDL() and
+    not Device:isSonyPRSTUX() and
+    not Device:isPocketBook() then
     return { disabled = true, }
 end
 
@@ -21,6 +26,7 @@ local AutoSuspend = WidgetContainer:new{
     autoshutdown_timeout_seconds = G_reader_settings:readSetting("autoshutdown_timeout_seconds") or default_autoshutdown_timeout_seconds,
     settings = LuaSettings:open(DataStorage:getSettingsDir() .. "/koboautosuspend.lua"),
     last_action_sec = os.time(),
+    standby_prevented = false,
 }
 
 function AutoSuspend:_readTimeoutSecFrom(settings)
@@ -60,27 +66,29 @@ function AutoSuspend:_schedule()
 
     local delay_suspend, delay_shutdown
 
-    if PluginShare.pause_auto_suspend then
+    if PluginShare.pause_auto_suspend or Device.standby_prevented or Device.powerd:isCharging() then
         delay_suspend = self.auto_suspend_sec
         delay_shutdown = self.autoshutdown_timeout_seconds
     else
-        delay_suspend = self.last_action_sec + self.auto_suspend_sec - os.time()
-        delay_shutdown = self.last_action_sec + self.autoshutdown_timeout_seconds - os.time()
+        local now_ts = os.time()
+        delay_suspend = self.last_action_sec + self.auto_suspend_sec - now_ts
+        delay_shutdown = self.last_action_sec + self.autoshutdown_timeout_seconds - now_ts
     end
 
-    if delay_suspend <= 0 then
-        logger.dbg("AutoSuspend: will suspend the device")
-        UIManager:suspend()
-    elseif delay_shutdown <= 0 then
+    -- Try to shutdown first, as we may have been woken up from suspend just for the sole purpose of doing that.
+    if delay_shutdown <= 0 then
         logger.dbg("AutoSuspend: initiating shutdown")
         UIManager:poweroff_action()
+    elseif delay_suspend <= 0 then
+        logger.dbg("AutoSuspend: will suspend the device")
+        UIManager:suspend()
     else
         if self:_enabled() then
-            logger.dbg("AutoSuspend: schedule suspend at ", os.time() + delay_suspend)
+            logger.dbg("AutoSuspend: schedule suspend in", delay_suspend)
             UIManager:scheduleIn(delay_suspend, self._schedule, self)
         end
         if self:_enabledShutdown() then
-            logger.dbg("AutoSuspend: schedule shutdown at ", os.time() + delay_shutdown)
+            logger.dbg("AutoSuspend: schedule shutdown in", delay_shutdown)
             UIManager:scheduleIn(delay_shutdown, self._schedule, self)
         end
     end
@@ -93,13 +101,15 @@ end
 
 function AutoSuspend:_start()
     if self:_enabled() or self:_enabledShutdown() then
-        logger.dbg("AutoSuspend: start at ", os.time())
-        self.last_action_sec = os.time()
+        local now_ts = os.time()
+        logger.dbg("AutoSuspend: start at", now_ts)
+        self.last_action_sec = now_ts
         self:_schedule()
     end
 end
 
 function AutoSuspend:init()
+    if Device:isPocketBook() and not Device:canSuspend() then return end
     UIManager.event_hook:registerWidget("InputEvent", self)
     self.auto_suspend_sec = self:_readTimeoutSec()
     self:_unschedule()
@@ -132,8 +142,17 @@ function AutoSuspend:onResume()
     self:_start()
 end
 
+function AutoSuspend:onAllowStandby()
+    self.standby_prevented = false
+end
+
+function AutoSuspend:onPreventStandby()
+    self.standby_prevented = true
+end
+
 function AutoSuspend:addToMainMenu(menu_items)
     menu_items.autosuspend = {
+        sorting_hint = "device",
         text = _("Autosuspend timeout"),
         callback = function()
             local InfoMessage = require("ui/widget/infomessage")
@@ -166,6 +185,7 @@ function AutoSuspend:addToMainMenu(menu_items)
     }
     if not (Device:canPowerOff() or Device:isEmulator()) then return end
     menu_items.autoshutdown = {
+        sorting_hint = "device",
         text = _("Autoshutdown timeout"),
         callback = function()
             local InfoMessage = require("ui/widget/infomessage")

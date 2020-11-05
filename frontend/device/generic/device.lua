@@ -28,6 +28,7 @@ local Device = {
     suspend_wait_timeout = 15,
 
     -- hardware feature tests: (these are functions!)
+    hasBattery = yes,
     hasKeyboard = no,
     hasKeys = no,
     hasDPad = no,
@@ -38,9 +39,9 @@ local Device = {
     isHapticFeedbackEnabled = no,
     isTouchDevice = no,
     hasFrontlight = no,
-    hasLightLevelFallback = no,
     hasNaturalLight = no, -- FL warmth implementation specific to NTX boards (Kobo, Cervantes)
     hasNaturalLightMixer = no, -- Same, but only found on newer boards
+    hasNaturalLightApi = no,
     needsTouchScreenProbe = no,
     hasClipboard = yes, -- generic internal clipboard on all devices
     hasEinkScreen = yes,
@@ -55,11 +56,13 @@ local Device = {
     canToggleGSensor = no,
     isGSensorLocked = no,
     canToggleMassStorage = no,
+    canToggleChargingLED = no,
     canUseWAL = yes, -- requires mmap'ed I/O on the target FS
     canRestart = yes,
     canSuspend = yes,
     canReboot = no,
     canPowerOff = no,
+    canAssociateFileExtensions = no,
 
     -- use these only as a last resort. We should abstract the functionality
     -- and have device dependent implementations in the corresponting
@@ -78,19 +81,24 @@ local Device = {
 
     -- some devices have part of their screen covered by the bezel
     viewport = nil,
-    -- enforce portrait orientation on display, no matter how configured at
-    -- startup
+    -- enforce portrait orientation of display when FB defaults to landscape
     isAlwaysPortrait = no,
+    -- On some devices (eg newer pocketbook) we can force HW rotation on the fly (before each update)
+    -- The value here is table of 4 elements mapping the sensible linux constants to whatever
+    -- nonsense the device actually has. Canonically it should return { 0, 1, 2, 3 } if the device
+    -- matches <linux/fb.h> FB_ROTATE_* constants.
+    -- See https://github.com/koreader/koreader-base/blob/master/ffi/framebuffer.lua for full template
+    -- of the table expected.
+    usingForcedRotation = function() return nil end,
     -- needs full screen refresh when resumed from screensaver?
     needsScreenRefreshAfterResume = yes,
 
-    -- set to yes on devices whose framebuffer reports 8bit per pixel,
-    -- but is actually a color eInk screen with 24bit per pixel.
-    -- The refresh is still based on bytes. (This solves issue #4193.)
-    has3BytesWideFrameBuffer = no,
-
     -- set to yes on devices that support over-the-air incremental updates.
     hasOTAUpdates = no,
+
+    -- set to yes on devices that have a non-blocking isWifiOn implementation
+    -- (c.f., https://github.com/koreader/koreader/pull/5211#issuecomment-521304139)
+    hasFastWifiStatusQuery = no,
 
     canOpenLink = no,
     openLink = no,
@@ -129,6 +137,13 @@ function Device:init()
     assert(self ~= nil)
     if not self.screen then
         error("screen/framebuffer must be implemented")
+    end
+
+    -- opt-out of CBB if the device is broken with it
+    if not self.canUseCBB() then
+        local bb = require("ffi/blitbuffer")
+        bb.has_cblitbuffer = false
+        bb:enableCBB(false)
     end
 
     if self.hasMultitouch == nil then
@@ -203,7 +218,7 @@ function Device:rescheduleSuspend()
     UIManager:scheduleIn(self.suspend_wait_timeout, self.suspend)
 end
 
--- ONLY used for Kobo and PocketBook devices
+-- Only used on platforms where we handle suspend ourselves.
 function Device:onPowerEvent(ev)
     if self.screen_saver_mode then
         if ev == "Power" or ev == "Resume" then
@@ -214,10 +229,12 @@ function Device:onPowerEvent(ev)
                 logger.dbg("Resuming...")
                 local UIManager = require("ui/uimanager")
                 UIManager:unschedule(self.suspend)
-                local network_manager = require("ui/network/manager")
-                if network_manager.wifi_was_on and G_reader_settings:isTrue("auto_restore_wifi") then
-                    network_manager:restoreWifiAsync()
-                    network_manager:scheduleConnectivityCheck()
+                if self:hasWifiManager() and not self:isEmulator() then
+                    local network_manager = require("ui/network/manager")
+                    if network_manager.wifi_was_on and G_reader_settings:isTrue("auto_restore_wifi") then
+                        network_manager:restoreWifiAsync()
+                        network_manager:scheduleConnectivityCheck()
+                    end
                 end
                 self:resume()
                 -- Restore to previous rotation mode, if need be.
@@ -275,28 +292,57 @@ function Device:onPowerEvent(ev)
             self.orig_rotation_mode = nil
         end
         require("ui/screensaver"):show()
+        -- NOTE: show() will return well before the refresh ioctl is even *sent*:
+        --       the only thing it's done is *enqueued* the refresh in UIManager's stack.
+        --       Which is why the actual suspension needs to be delayed by suspend_wait_timeout,
+        --       otherwise, we'd potentially suspend (or attempt to) too soon.
+        --       On platforms where suspension is done via a sysfs knob, that'd translate to a failed suspend,
+        --       and on platforms where we defer to a system tool, it'd probably suspend too early!
+        --       c.f., #6676
         if self:needsScreenRefreshAfterResume() then
             self.screen:refreshFull()
         end
         self.screen_saver_mode = true
         UIManager:scheduleIn(0.1, function()
-          local network_manager = require("ui/network/manager")
-          -- NOTE: wifi_was_on does not necessarily mean that WiFi is *currently* on! It means *we* enabled it.
-          --       This is critical on Kobos (c.f., #3936), where it might still be on from KSM or Nickel,
-          --       without us being aware of it (i.e., wifi_was_on still unset or false),
-          --       because suspend will at best fail, and at worst deadlock the system if WiFi is on,
-          --       regardless of who enabled it!
-          if network_manager.wifi_was_on or network_manager:isWifiOn() then
-              network_manager:releaseIP()
-              network_manager:turnOffWifi()
-          end
-          UIManager:scheduleIn(self.suspend_wait_timeout, self.suspend)
+            -- NOTE: This side of the check needs to be laxer, some platforms can handle Wi-Fi without WifiManager ;).
+            if self:hasWifiToggle() then
+                local network_manager = require("ui/network/manager")
+                -- NOTE: wifi_was_on does not necessarily mean that Wi-Fi is *currently* on! It means *we* enabled it.
+                --       This is critical on Kobos (c.f., #3936), where it might still be on from KSM or Nickel,
+                --       without us being aware of it (i.e., wifi_was_on still unset or false),
+                --       because suspend will at best fail, and at worst deadlock the system if Wi-Fi is on,
+                --       regardless of who enabled it!
+                if network_manager:isWifiOn() then
+                    network_manager:releaseIP()
+                    network_manager:turnOffWifi()
+                end
+            end
+            UIManager:scheduleIn(self.suspend_wait_timeout, self.suspend)
         end)
     end
 end
 
+function Device:showLightDialog()
+    local FrontLightWidget = require("ui/widget/frontlightwidget")
+    local UIManager = require("ui/uimanager")
+    UIManager:show(FrontLightWidget:new{})
+end
+
 function Device:info()
     return self.model
+end
+
+-- Hardware specific method to track opened/closed books (nil on book close)
+function Device:notifyBookState(title, document) end
+
+-- Hardware specific method for UI to signal allowed/disallowed standby.
+-- The device is allowed to enter standby only from within waitForEvents,
+-- and only if allowed state is true at the time of waitForEvents() invocation.
+function Device:setAutoStandby(isAllowed) end
+
+-- Hardware specific method to set OS-level file associations to launch koreader. Expects boolean map.
+function Device:associateFileExtensions(exts)
+    logger.dbg("Device:associateFileExtensions():", util.tableSize(exts), "entries, OS handler missing")
 end
 
 -- Hardware specific method to handle usb plug in event
@@ -327,6 +373,10 @@ function Device:setDateTime(year, month, day, hour, min, sec) end
 
 -- Device specific method if any setting needs being saved
 function Device:saveSettings() end
+
+-- Simulates suspend/resume
+function Device:simulateSuspend() end
+function Device:simulateResume() end
 
 --[[--
 Device specific method for performing haptic feedback.
@@ -363,15 +413,15 @@ function Device:lockGSensor(toggle)
     end
 end
 
--- Device specific method for set custom light levels
-function Device:setScreenBrightness(level) end
+-- Device specific method for toggling the charging LED
+function Device:toggleChargingLED(toggle) end
 
 --[[
 prepare for application shutdown
 --]]
 function Device:exit()
-    require("ffi/input"):closeAll()
     self.screen:close()
+    require("ffi/input"):closeAll()
 end
 
 function Device:retrieveNetworkInfo()
@@ -388,7 +438,7 @@ function Device:retrieveNetworkInfo()
         std_out = io.popen('2>/dev/null iwconfig | grep ESSID | cut -d\\" -f2')
         if std_out then
             local ssid = std_out:read("*all")
-            result = result .. "SSID: " .. ssid:gsub("(.-)%s*$", "%1") .. "\n"
+            result = result .. "SSID: " .. util.trim(ssid) .. "\n"
             std_out:close()
         end
         if os.execute("ip r | grep -q default") == 0 then

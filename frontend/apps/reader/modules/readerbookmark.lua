@@ -391,7 +391,8 @@ end
 function ReaderBookmark:isBookmarkSame(item1, item2)
     if item1.notes ~= item2.notes then return false end
     if self.ui.document.info.has_pages then
-        return item2.pos0 and item2.pos1 and item1.pos0.page == item2.pos0.page
+        return item1.pos0 and item1.pos1 and item2.pos0 and item2.pos1
+        and item1.pos0.page == item2.pos0.page
         and item1.pos0.x == item2.pos0.x and item1.pos0.y == item2.pos0.y
         and item1.pos1.x == item2.pos1.x and item1.pos1.y == item2.pos1.y
     else
@@ -572,7 +573,8 @@ function ReaderBookmark:toggleBookmark(pn_or_xp)
         local notes = self.ui.toc:getTocTitleByPage(pn_or_xp)
         local chapter_name = notes
         if notes ~= "" then
-            notes = "in "..notes
+            -- @translators In which chapter title (%1) a note is found.
+            notes = T(_("in %1"), notes)
         end
         self:addBookmark({
             page = pn_or_xp,
@@ -677,6 +679,10 @@ end
 
 function ReaderBookmark:hasBookmarks()
     return self.bookmarks and #self.bookmarks > 0
+end
+
+function ReaderBookmark:getNumberOfBookmarks()
+    return self.bookmarks and #self.bookmarks or 0
 end
 
 function ReaderBookmark:getNumberOfHighlightsAndNotes()

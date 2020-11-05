@@ -37,6 +37,8 @@ local UIManager = {
     _refresh_func_stack = {},
     _entered_poweroff_stage = false,
     _exit_code = nil,
+    _prevent_standby_count = 0,
+    _prev_prevent_standby_count = 0,
 
     event_hook = require("ui/hook_container"):new()
 }
@@ -80,12 +82,11 @@ function UIManager:init()
         end)
     end
     if Device:isPocketBook() then
+        -- Only fg/bg state plugin notifiers, not real power event.
         self.event_handlers["Suspend"] = function()
             self:_beforeSuspend()
-            Device:onPowerEvent("Power")
         end
         self.event_handlers["Resume"] = function()
-            Device:onPowerEvent("Power")
             self:_afterResume()
         end
     end
@@ -155,11 +156,30 @@ function UIManager:init()
         end
         self.event_handlers["Charging"] = function()
             self:_beforeCharging()
+            -- NOTE: Plug/unplug events will wake the device up, which is why we put it back to sleep.
             if Device.screen_saver_mode then
                 self:suspend()
             end
         end
         self.event_handlers["NotCharging"] = function()
+            -- We need to put the device into suspension, other things need to be done before it.
+            self:_afterNotCharging()
+            if Device.screen_saver_mode then
+                self:suspend()
+            end
+        end
+        self.event_handlers["UsbPlugIn"] = function()
+            self:_beforeCharging()
+            -- NOTE: Plug/unplug events will wake the device up, which is why we put it back to sleep.
+            if Device.screen_saver_mode then
+                self:suspend()
+            else
+                -- Potentially start an USBMS session
+                local MassStorage = require("ui/elements/mass_storage")
+                MassStorage:start()
+            end
+        end
+        self.event_handlers["UsbPlugOut"] = function()
             -- We need to put the device into suspension, other things need to be done before it.
             self:_afterNotCharging()
             if Device.screen_saver_mode then
@@ -193,6 +213,14 @@ function UIManager:init()
             self:_afterNotCharging()
         end
     elseif Device:isRemarkable() then
+        self.event_handlers["Suspend"] = function()
+            self:_beforeSuspend()
+            Device:onPowerEvent("Suspend")
+        end
+        self.event_handlers["Resume"] = function()
+            Device:onPowerEvent("Resume")
+            self:_afterResume()
+        end
         self.event_handlers["PowerPress"] = function()
             UIManager:scheduleIn(2, self.poweroff_action)
         end
@@ -206,16 +234,6 @@ function UIManager:init()
                     self:suspend()
                 end
             end
-        end
-        self.event_handlers["Suspend"] = function()
-            self:_beforeSuspend()
-            Device:intoScreenSaver()
-            Device:suspend()
-        end
-        self.event_handlers["Resume"] = function()
-            Device:resume()
-            Device:outofScreenSaver()
-            self:_afterResume()
         end
         self.event_handlers["__default__"] = function(input_event)
             -- Same as in Kobo: we want to ignore keys during suspension
@@ -310,9 +328,13 @@ function UIManager:init()
             self:_beforeCharging()
             if Device.screen_saver_mode then
                 self:suspend()
+            else
+                -- Potentially start an USBMS session
+                local MassStorage = require("ui/elements/mass_storage")
+                MassStorage:start()
             end
         end
-        self.event_handlers["USbPlugOut"] = function()
+        self.event_handlers["UsbPlugOut"] = function()
             self:_afterNotCharging()
             if Device.screen_saver_mode then
                 self:suspend()
@@ -377,6 +399,8 @@ function UIManager:show(widget, refreshtype, refreshregion, x, y, refreshdither)
     else
         Input.disable_double_tap = true
     end
+    -- a widget may override tap interval (when it doesn't, nil restores the default)
+    Input.tap_interval_override = widget.tap_interval_override
 end
 
 --[[--
@@ -403,6 +427,8 @@ function UIManager:close(widget, refreshtype, refreshregion, refreshdither)
     -- make it disabled by default and check if any widget wants it disabled or enabled
     Input.disable_double_tap = true
     local requested_disable_double_tap = nil
+    local is_covered = false
+    local start_idx = 1
     -- then remove all references to that widget on stack and refresh
     for i = #self._window_stack, 1, -1 do
         if self._window_stack[i].widget == widget then
@@ -410,10 +436,21 @@ function UIManager:close(widget, refreshtype, refreshregion, refreshdither)
             table.remove(self._window_stack, i)
             dirty = true
         else
-            -- If anything else on the stack was dithered, honor the hint
-            if self._window_stack[i].widget.dithered then
+            -- If anything else on the stack not already hidden by (i.e., below) a fullscreen widget was dithered, honor the hint
+            if self._window_stack[i].widget.dithered and not is_covered then
                 refreshdither = true
                 logger.dbg("Lower widget", self._window_stack[i].widget.name or self._window_stack[i].widget.id or tostring(self._window_stack[i].widget), "was dithered, honoring the dithering hint")
+            end
+
+            -- Remember the uppermost widget that covers the full screen, so we don't bother calling setDirty on hidden (i.e., lower) widgets in the following dirty loop.
+            -- _repaint already does that later on to skip the actual paintTo calls, so this ensures we limit the refresh queue to stuff that will actually get painted.
+            if not is_covered and self._window_stack[i].widget.covers_fullscreen then
+                is_covered = true
+                start_idx = i
+                logger.dbg("Lower widget", self._window_stack[i].widget.name or self._window_stack[i].widget.id or tostring(self._window_stack[i].widget), "covers the full screen")
+                if i > 1 then
+                    logger.dbg("not refreshing", i-1, "covered widget(s)")
+                end
             end
 
             -- Set double tap to how the topmost specifying widget wants it
@@ -425,9 +462,13 @@ function UIManager:close(widget, refreshtype, refreshregion, refreshdither)
     if requested_disable_double_tap ~= nil then
         Input.disable_double_tap = requested_disable_double_tap
     end
+    if #self._window_stack > 0 then
+        -- set tap interval override to what the topmost widget specifies (when it doesn't, nil restores the default)
+        Input.tap_interval_override = self._window_stack[#self._window_stack].widget.tap_interval_override
+    end
     if dirty and not widget.invisible then
-        -- schedule remaining widgets to be painted
-        for i = 1, #self._window_stack do
+        -- schedule the remaining visible (i.e., uncovered) widgets to be painted
+        for i = start_idx, #self._window_stack do
             self:setDirty(self._window_stack[i].widget)
         end
         self:_refresh(refreshtype, refreshregion, refreshdither)
@@ -689,22 +730,36 @@ end
 --
 -- Also makes the refresh rate persistent in global reader settings.
 function UIManager:setRefreshRate(rate, night_rate)
-    logger.dbg("set screen full refresh rate", rate)
-    self.FULL_REFRESH_COUNT =  G_reader_settings:isTrue("night_mode") and night_rate or rate
-    G_reader_settings:saveSetting("full_refresh_count", rate)
-    G_reader_settings:saveSetting("night_full_refresh_count", night_rate)
+    logger.dbg("set screen full refresh rate", rate, night_rate)
+
+    if G_reader_settings:isTrue("night_mode") then
+        if night_rate then
+            self.FULL_REFRESH_COUNT = night_rate
+        end
+    else
+        if rate then
+            self.FULL_REFRESH_COUNT = rate
+        end
+    end
+
+    if rate then
+        G_reader_settings:saveSetting("full_refresh_count", rate)
+    end
+    if night_rate then
+        G_reader_settings:saveSetting("night_full_refresh_count", night_rate)
+    end
 end
 
 --- Gets full refresh rate for e-ink screen.
 function UIManager:getRefreshRate()
-    return G_reader_settings:readSetting("full_refresh_count"), G_reader_settings:readSetting("night_full_refresh_count") or G_reader_settings:readSetting("full_refresh_count")
+    return G_reader_settings:readSetting("full_refresh_count") or DEFAULT_FULL_REFRESH_COUNT, G_reader_settings:readSetting("night_full_refresh_count") or G_reader_settings:readSetting("full_refresh_count") or DEFAULT_FULL_REFRESH_COUNT
 end
 
 function UIManager:ToggleNightMode(night_mode)
     if night_mode then
-        self.FULL_REFRESH_COUNT = G_reader_settings:readSetting("night_full_refresh_count") or G_reader_settings:readSetting("full_refresh_count")
+        self.FULL_REFRESH_COUNT = G_reader_settings:readSetting("night_full_refresh_count") or G_reader_settings:readSetting("full_refresh_count") or DEFAULT_FULL_REFRESH_COUNT
     else
-        self.FULL_REFRESH_COUNT = G_reader_settings:readSetting("full_refresh_count")
+        self.FULL_REFRESH_COUNT = G_reader_settings:readSetting("full_refresh_count") or DEFAULT_FULL_REFRESH_COUNT
     end
 end
 
@@ -1007,6 +1062,16 @@ function UIManager:_repaint()
         end
     end
 
+    -- Show IDs of covered widgets when debugging
+    --[[
+    if start_idx > 1 then
+        for i = 1, start_idx-1 do
+            local widget = self._window_stack[i]
+            logger.dbg("NOT painting widget:", widget.widget.name or widget.widget.id or tostring(widget))
+        end
+    end
+    --]]
+
     for i = start_idx, #self._window_stack do
         local widget = self._window_stack[i]
         -- paint if current widget or any widget underneath is dirty
@@ -1014,6 +1079,7 @@ function UIManager:_repaint()
             -- pass hint to widget that we got when setting widget dirty
             -- the widget can use this to decide which parts should be refreshed
             logger.dbg("painting widget:", widget.widget.name or widget.widget.id or tostring(widget))
+            Screen:beforePaint()
             widget.widget:paintTo(Screen.bb, widget.x, widget.y, self._dirty[widget.widget])
 
             -- and remove from list after painting
@@ -1085,6 +1151,12 @@ function UIManager:_repaint()
             refresh.region.w, refresh.region.h,
             refresh.dither)
     end
+
+    -- Don't trigger afterPaint if we did not, in fact, paint anything
+    if dirty then
+        Screen:afterPaint()
+    end
+
     self._refresh_stack = {}
     self.refresh_counted = false
 end
@@ -1140,6 +1212,8 @@ function UIManager:handleInput()
     repeat
         wait_until, now = self:_checkTasks()
         --dbg("---------------------------------------------------")
+        --dbg("wait_until", wait_until)
+        --dbg("now", now)
         --dbg("exec stack", self._task_queue)
         --dbg("window stack", self._window_stack)
         --dbg("dirty stack", self._dirty)
@@ -1174,6 +1248,11 @@ function UIManager:handleInput()
     if #self._zeromqs > 0 then
         wait_us = math.min(wait_us or math.huge, self.ZMQ_TIMEOUT)
     end
+
+    -- If allowed, entering standby (from which we can wake by input) must trigger in response to event
+    -- this function emits (plugin), or within waitEvent() right after (hardware).
+    -- Anywhere else breaks preventStandby/allowStandby invariants used by background jobs while UI is left running.
+    self:_standbyTransition()
 
     -- wait for next event
     local input_event = Input:waitEvent(wait_us)
@@ -1252,10 +1331,16 @@ function UIManager:_afterResume()
 end
 
 function UIManager:_beforeCharging()
+    if G_reader_settings:nilOrTrue("enable_charging_led") then
+        Device:toggleChargingLED(true)
+    end
     self:broadcastEvent(Event:new("Charging"))
 end
 
 function UIManager:_afterNotCharging()
+    if G_reader_settings:nilOrTrue("enable_charging_led") then
+        Device:toggleChargingLED(false)
+    end
     self:broadcastEvent(Event:new("NotCharging"))
 end
 
@@ -1266,6 +1351,8 @@ function UIManager:suspend()
         self.event_handlers["Suspend"]()
     elseif Device:isKindle() then
         Device.powerd:toggleSuspend()
+    elseif Device.isPocketBook() and Device.canSuspend() then
+        Device:suspend()
     end
 end
 
@@ -1276,6 +1363,35 @@ function UIManager:resume()
     elseif Device:isKindle() then
         self.event_handlers["OutOfSS"]()
     end
+end
+
+-- Release standby lock once. We're done with whatever we were doing in the background.
+-- Standby is re-enabled only after all issued prevents are paired with allowStandby for each one.
+function UIManager:allowStandby()
+    assert(self._prevent_standby_count > 0, "allowing standby that isn't prevented; you have an allow/prevent mismatch somewhere")
+    self._prevent_standby_count = self._prevent_standby_count - 1
+end
+
+-- Prevent standby, ie something is happening in background, yet UI may tick.
+function UIManager:preventStandby()
+    self._prevent_standby_count = self._prevent_standby_count + 1
+end
+
+-- Allow/prevent calls above can interminently allow standbys, but we're not interested until
+-- the state change crosses UI tick boundary, which is what self._prev_prevent_standby_count is tracking.
+function UIManager:_standbyTransition()
+    if self._prevent_standby_count == 0 and self._prev_prevent_standby_count > 0 then
+        -- edge prevent->allow
+        logger.dbg("allow standby")
+        Device:setAutoStandby(true)
+        self:broadcastEvent(Event:new("AllowStandby"))
+    elseif self._prevent_standby_count > 0 and self._prev_prevent_standby_count == 0 then
+        -- edge allow->prevent
+        logger.dbg("prevent standby")
+        Device:setAutoStandby(false)
+        self:broadcastEvent(Event:new("PreventStandby"))
+    end
+    self._prev_prevent_standby_count = self._prevent_standby_count
 end
 
 function UIManager:flushSettings()

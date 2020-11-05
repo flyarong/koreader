@@ -223,7 +223,12 @@ function ReaderView:paintTo(bb, x, y)
         -- With some nil guards because this may not be implemented in every engine ;).
         if img_count and img_count > 0 and img_coverage and img_coverage >= 0.075 then
             self.dialog.dithered = true
+            -- Request a flashing update while we're at it, but only if it's the first time we're painting it
+            if self.state.drawn == false then
+                UIManager:setDirty(nil, "full")
+            end
         end
+        self.state.drawn = true
     end
 end
 
@@ -563,7 +568,7 @@ function ReaderView:recalculate()
             self.state.rotation)
         -- reset our size
         self.visible_area:setSizeTo(self.dimen)
-        if self.ui.view.footer_visible then
+        if self.ui.view.footer_visible and not self.ui.view.footer.settings.reclaim_height then
             self.visible_area.h = self.visible_area.h - self.ui.view.footer:getHeight()
         end
         if self.ui.document.configurable.writing_direction == 0 then
@@ -589,7 +594,7 @@ function ReaderView:recalculate()
     end
     self.state.offset = Geom:new{x = 0, y = 0}
     if self.dimen.h > self.visible_area.h then
-        if self.ui.view.footer_visible then
+        if self.ui.view.footer_visible and not self.ui.view.footer.settings.reclaim_height then
             self.state.offset.y = (self.dimen.h - (self.visible_area.h + self.ui.view.footer:getHeight())) / 2
         else
             self.state.offset.y = (self.dimen.h - self.visible_area.h) / 2
@@ -598,7 +603,7 @@ function ReaderView:recalculate()
     if self.dimen.w > self.visible_area.w then
         self.state.offset.x = (self.dimen.w - self.visible_area.w) / 2
     end
-    -- flag a repaint so self:paintTo will be called
+    -- Flag a repaint so self:paintTo will be called
     -- NOTE: This is also unfortunately called during panning, essentially making sure we'll never be using "fast" for pans ;).
     UIManager:setDirty(self.dialog, "partial")
 end
@@ -663,13 +668,25 @@ function ReaderView:getViewContext()
 end
 
 function ReaderView:restoreViewContext(ctx)
+    -- The format of the context is different depending on page_scroll.
+    -- If we're asked to restore the other format, just ignore it
+    -- (our only caller, ReaderPaging:onRestoreBookLocation(), will
+    -- at least change to the page of the context, which is all that
+    -- can be done when restoring from a different mode)
     if self.page_scroll then
-        self.page_states = ctx
+        if ctx[1] and ctx[1].visible_area then
+            self.page_states = ctx
+            return true
+        end
     else
-        self.state = ctx[1]
-        self.visible_area = ctx[2]
-        self.page_area = ctx[3]
+        if ctx[1] and ctx[1].pos then
+            self.state = ctx[1]
+            self.visible_area = ctx[2]
+            self.page_area = ctx[3]
+            return true
+        end
     end
+    return false
 end
 
 function ReaderView:onSetRotationMode(rotation)
@@ -758,6 +775,7 @@ end
 
 function ReaderView:onPageUpdate(new_page_no)
     self.state.page = new_page_no
+    self.state.drawn = false
     self:recalculate()
     self.highlight.temp = {}
     self:checkAutoSaveSettings()
@@ -783,6 +801,25 @@ end
 function ReaderView:onRotationUpdate(rotation)
     self.state.rotation = rotation
     self:recalculate()
+end
+
+function ReaderView:onReaderFooterVisibilityChange()
+    -- Don't bother ReaderRolling with this nonsense, the footer's height is NOT handled via visible_area there ;)
+    if self.ui.document.info.has_pages and self.state.page then
+        -- NOTE: Simply relying on recalculate would be a wee bit too much: it'd reset the in-page offsets,
+        --       which would be wrong, and is also not necessary, since the footer is at the bottom of the screen ;).
+        --       So, simply mangle visible_area's height ourselves...
+        if not self.ui.view.footer.settings.reclaim_height then
+            -- NOTE: Yes, this means that toggling reclaim_height requires a page switch (for a proper recalculate).
+            --       Thankfully, most of the time, the quirks are barely noticeable ;).
+            if self.ui.view.footer_visible then
+                self.visible_area.h = self.visible_area.h - self.ui.view.footer:getHeight()
+            else
+                self.visible_area.h = self.visible_area.h + self.ui.view.footer:getHeight()
+            end
+        end
+        self.ui:handleEvent(Event:new("ViewRecalculate", self.visible_area, self.page_area))
+    end
 end
 
 function ReaderView:onGammaUpdate(gamma)
@@ -827,7 +864,11 @@ end
 
 function ReaderView:onSaveSettings()
     self.ui.doc_settings:saveSetting("render_mode", self.render_mode)
-    self.ui.doc_settings:saveSetting("rotation_mode", Screen:getRotationMode())
+    -- Don't etch the current rotation in stone when sticky rotation is enabled
+    local locked = G_reader_settings:isTrue("lock_rotation")
+    if not locked then
+        self.ui.doc_settings:saveSetting("rotation_mode", Screen:getRotationMode())
+    end
     self.ui.doc_settings:saveSetting("gamma", self.state.gamma)
     self.ui.doc_settings:saveSetting("highlight", self.highlight.saved)
     self.ui.doc_settings:saveSetting("page_overlap_style", self.page_overlap_style)
@@ -917,11 +958,11 @@ function ReaderView:checkAutoSaveSettings()
     if not interval then -- no auto save
         return
     end
-    if os.time() - self.settings_last_save_ts >= interval*60 then
-        self.settings_last_save_ts = os.time()
+    local now_ts = os.time()
+    if now_ts - self.settings_last_save_ts >= interval*60 then
+        self.settings_last_save_ts = now_ts
         UIManager:nextTick(function()
             self.ui:saveSettings()
-            self.settings_last_save_ts = os.time() -- re-set when saving done
         end)
     end
 end

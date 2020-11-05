@@ -14,7 +14,7 @@ local bor = bit.bor
 
 local util = {}
 
---- Strips all punctuation marks and spaces from a string.
+---- Strips all punctuation marks and spaces from a string.
 ---- @string text the string to be stripped
 ---- @treturn string stripped text
 function util.stripPunctuation(text)
@@ -22,6 +22,33 @@ function util.stripPunctuation(text)
     -- strip ASCII punctuation marks around text
     -- and strip any generic punctuation marks (U+2000 - U+206F) in the text
     return text:gsub("\226[\128-\131][\128-\191]", ''):gsub("^%p+", ''):gsub("%p+$", '')
+end
+
+-- Various whitespace trimming helpers, from http://lua-users.org/wiki/CommonFunctions & http://lua-users.org/wiki/StringTrim
+---- Remove leading whitespace from string.
+---- @string s the string to be trimmed
+---- @treturn string trimmed text
+function util.ltrim(s)
+    return (s:gsub("^%s*", ""))
+end
+
+---- Remove trailing whitespace from string.
+---- @string s the string to be trimmed
+---- @treturn string trimmed text
+function util.rtrim(s)
+    local n = #s
+    while n > 0 and s:find("^%s", n) do
+        n = n - 1
+    end
+    return s:sub(1, n)
+end
+
+---- Remove leading & trailing whitespace from string.
+---- @string s the string to be trimmed
+---- @treturn string trimmed text
+function util.trim(s)
+   local from = s:match"^%s*()"
+   return from > #s and "" or s:match(".*%S", from)
 end
 
 --[[--
@@ -194,6 +221,38 @@ function util.secondsToHClock(seconds, withoutSeconds, hmsFormat)
     end
 end
 
+--- Converts timestamp to an hour string
+---- @int seconds number of seconds
+---- @bool twelve_hour_clock
+---- @treturn string hour string
+function util.secondsToHour(seconds, twelve_hour_clock)
+    local time
+    if twelve_hour_clock then
+        if os.date("%p", seconds) == "AM" then
+            -- @translators This is the time in the morning in the 12-hour clock (%I is the hour, %M the minute).
+            time = os.date(_("%I:%M AM"), seconds)
+        else
+            -- @translators This is the time in the afternoon in the 12-hour clock (%I is the hour, %M the minute).
+            time = os.date(_("%I:%M PM"), seconds)
+        end
+    else
+        -- @translators This is the time in the 24-hour clock (%H is the hour, %M the minute).
+        time = os.date(_("%H:%M"), seconds)
+    end
+    return time
+end
+
+--- Converts timestamp to a date string
+---- @int seconds number of seconds
+---- @bool twelve_hour_clock
+---- @treturn string date string
+function util.secondsToDate(seconds, twelve_hour_clock)
+    local BD = require("ui/bidi")
+    local time = util.secondsToHour(seconds, twelve_hour_clock)
+    -- @translators This is the date (%Y is the year, %m the month, %d the day)
+    local day = os.date(_("%Y-%m-%d"), seconds)
+    return BD.wrap(day) .. " " .. BD.wrap(time)
+end
 
 --[[--
 Compares values in two different tables.
@@ -519,6 +578,28 @@ function util.getFilesystemType(path)
     end
     mounts:close()
     return type
+end
+
+--- Recursively scan directory for files inside
+-- @string path
+-- @function callback(fullpath, name, attr)
+function util.findFiles(dir, cb)
+    local function scan(current)
+        local ok, iter, dir_obj = pcall(lfs.dir, current)
+        if not ok then return end
+        for f in iter, dir_obj do
+            local path = current.."/"..f
+            local attr = lfs.attributes(path)
+            if attr.mode == "directory" then
+                if f ~= "." and f ~= ".." then
+                    scan(path)
+                end
+            elseif attr.mode == "file" or attr.mode == "link" then
+                cb(path, f, attr)
+            end
+        end
+    end
+    scan(dir)
 end
 
 --- Checks if directory is empty.

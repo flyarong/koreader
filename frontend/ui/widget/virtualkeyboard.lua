@@ -3,6 +3,7 @@ local BottomContainer = require("ui/widget/container/bottomcontainer")
 local CenterContainer = require("ui/widget/container/centercontainer")
 local Device = require("device")
 local Event = require("ui/event")
+local FFIUtil = require("ffi/util")
 local FocusManager = require("ui/widget/focusmanager")
 local Font = require("ui/font")
 local FrameContainer = require("ui/widget/container/framecontainer")
@@ -20,7 +21,6 @@ local VerticalGroup = require("ui/widget/verticalgroup")
 local VerticalSpan = require("ui/widget/verticalspan")
 local WidgetContainer = require("ui/widget/container/widgetcontainer")
 local logger = require("logger")
-local orderedPairs = require("ffi/util").orderedPairs
 local util = require("util")
 local Screen = Device.screen
 
@@ -60,7 +60,7 @@ function VirtualKey:init()
             local keyboard_layouts = G_reader_settings:readSetting("keyboard_layouts") or {}
             local enabled = false
             local next_layout = nil
-            for k, v in orderedPairs(keyboard_layouts) do
+            for k, v in FFIUtil.orderedPairs(keyboard_layouts) do
                 if enabled and v == true then
                     next_layout = k
                     break
@@ -70,7 +70,7 @@ function VirtualKey:init()
                 end
             end
             if not next_layout then
-                for k, v in orderedPairs(keyboard_layouts) do
+                for k, v in FFIUtil.orderedPairs(keyboard_layouts) do
                     if enabled and v == true then
                         next_layout = k
                         break
@@ -241,7 +241,7 @@ function VirtualKey:genkeyboardLayoutKeyChars()
         end,
     }
     local index = 1
-    for k, v in orderedPairs(keyboard_layouts) do
+    for k, v in FFIUtil.orderedPairs(keyboard_layouts) do
         if v == true then
             key_chars[positions[index]] = string.sub(k, 1, 2)
             key_chars[positions[index] .. "_func"] = function()
@@ -587,6 +587,7 @@ function VirtualKeyPopup:init()
             }
         },
     }
+    self.tap_interval_override = G_reader_settings:readSetting("ges_tap_interval_on_keyboard") or 0
 
     if Device:hasDPad() then
         self.key_events.PressKey = { {"Press"}, doc = "select key" }
@@ -667,6 +668,7 @@ local VirtualKeyboard = FocusManager:new{
         fr = "fr_keyboard",
         he = "he_keyboard",
         ja = "ja_keyboard",
+        pl = "pl_keyboard",
         pt_BR = "pt_keyboard",
         ro = "ro_keyboard",
         ko_KR = "ko_KR_keyboard",
@@ -692,6 +694,7 @@ function VirtualKeyboard:init()
     self.min_layer = keyboard.min_layer
     self.max_layer = keyboard.max_layer
     self:initLayer(self.keyboard_layer)
+    self.tap_interval_override = G_reader_settings:readSetting("ges_tap_interval_on_keyboard") or 0
     if Device:hasDPad() then
         self.key_events.PressKey = { {"Press"}, doc = "select key" }
     end

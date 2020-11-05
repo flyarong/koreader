@@ -1,5 +1,4 @@
 local Generic = require("device/generic/device")
-local TimeVal = require("ui/timeval")
 local logger = require("logger")
 
 local function yes() return true end
@@ -17,7 +16,7 @@ local function isConnected()
     -- read carrier state from sysfs (for eth0)
     local file = io.open("/sys/class/net/eth0/carrier", "rb")
 
-    -- file exists while wifi module is loaded.
+    -- file exists while Wi-Fi module is loaded.
     if not file then return 0 end
 
     -- 0 means not connected, 1 connected
@@ -56,8 +55,8 @@ local Cervantes = Generic:new{
     touch_legacy = true, -- SingleTouch input events
     touch_switch_xy = true,
     touch_mirrored_x = true,
-    touch_probe_ev_epoch_time = true,
     hasOTAUpdates = yes,
+    hasFastWifiStatusQuery = yes,
     hasKeys = yes,
     hasWifiManager = yes,
     canReboot = yes,
@@ -118,37 +117,16 @@ local Cervantes4 = Cervantes:new{
 }
 
 -- input events
-local probeEvEpochTime
--- this function will update itself after the first touch event
-probeEvEpochTime = function(self, ev)
-    local now = TimeVal:now()
-    -- This check should work as long as main UI loop is not blocked for more
-    -- than 10 minute before handling the first touch event.
-    if ev.time.sec <= now.sec - 600 then
-        -- time is seconds since boot, force it to epoch
-        probeEvEpochTime = function(_, _ev)
-            _ev.time = TimeVal:now()
-        end
-        ev.time = now
-    else
-        -- time is already epoch time, no need to do anything
-        probeEvEpochTime = function(_, _) end
-    end
-end
 function Cervantes:initEventAdjustHooks()
     if self.touch_switch_xy then
         self.input:registerEventAdjustHook(self.input.adjustTouchSwitchXY)
     end
+
     if self.touch_mirrored_x then
         self.input:registerEventAdjustHook(
             self.input.adjustTouchMirrorX,
             self.screen:getWidth()
         )
-    end
-    if self.touch_probe_ev_epoch_time then
-        self.input:registerEventAdjustHook(function(_, ev)
-            probeEvEpochTime(_, ev)
-        end)
     end
 
     if self.touch_legacy then
@@ -156,30 +134,8 @@ function Cervantes:initEventAdjustHooks()
     end
 end
 
--- Make sure the C BB cannot be used on devices with unsafe HW inversion, as otherwise NightMode would be ineffective.
-function Cervantes:blacklistCBB()
-    local ffi = require("ffi")
-    local dummy = require("ffi/posix_h")
-    local C = ffi.C
-
-    -- NOTE: canUseCBB is never no on Cervantes ;).
-    if not self:canUseCBB() or not self:canHWInvert() then
-        logger.info("Blacklisting the C BB on this device")
-        if ffi.os == "Windows" then
-            C._putenv("KO_NO_CBB=true")
-        else
-            C.setenv("KO_NO_CBB", "true", 1)
-        end
-        -- Enforce the global setting, too, so the Dev menu is accurate...
-        G_reader_settings:saveSetting("dev_no_c_blitter", true)
-    end
-end
-
 function Cervantes:init()
-    -- Blacklist the C BB before the first BB require...
-    self:blacklistCBB()
-
-    self.screen = require("ffi/framebuffer_mxcfb"):new{device = self, debug = logger.dbg}
+    self.screen = require("ffi/framebuffer_mxcfb"):new{device = self, debug = logger.dbg, is_always_portrait = self.isAlwaysPortrait()}
 
     -- Automagically set this so we never have to remember to do it manually ;p
     if self:hasNaturalLight() and self.frontlight_settings and self.frontlight_settings.frontlight_mixer then
@@ -224,7 +180,7 @@ end
 -- wireless
 function Cervantes:initNetworkManager(NetworkMgr)
     function NetworkMgr:turnOffWifi(complete_callback)
-        logger.info("Cervantes: disabling WiFi")
+        logger.info("Cervantes: disabling Wi-Fi")
         self:releaseIP()
         os.execute("./disable-wifi.sh")
         if complete_callback then
@@ -232,9 +188,12 @@ function Cervantes:initNetworkManager(NetworkMgr)
         end
     end
     function NetworkMgr:turnOnWifi(complete_callback)
-        logger.info("Cervantes: enabling WiFi")
+        logger.info("Cervantes: enabling Wi-Fi")
         os.execute("./enable-wifi.sh")
         self:reconnectOrShowNetworkMenu(complete_callback)
+    end
+    function NetworkMgr:getNetworkInterfaceName()
+        return "eth0"
     end
     NetworkMgr:setWirelessBackend("wpa_supplicant", {ctrl_interface = "/var/run/wpa_supplicant/eth0"})
     function NetworkMgr:obtainIP()

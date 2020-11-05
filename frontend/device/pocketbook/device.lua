@@ -1,118 +1,149 @@
 local Generic = require("device/generic/device") -- <= look at this file!
 local logger = require("logger")
 local ffi = require("ffi")
+local C = ffi.C
 local inkview = ffi.load("inkview")
+local band = require("bit").band
+local util = require("util")
 
--- luacheck: push
--- luacheck: ignore
-local EVT_INIT = 21
-local EVT_EXIT = 22
-local EVT_SHOW = 23
-local EVT_REPAINT = 23
-local EVT_HIDE = 24
-local EVT_KEYDOWN = 25
-local EVT_KEYPRESS = 25
-local EVT_KEYUP = 26
-local EVT_KEYRELEASE = 26
-local EVT_KEYREPEAT = 28
-local EVT_FOREGROUND = 151
-local EVT_BACKGROUND = 152
+require("ffi/posix_h")
+require("ffi/linux_input_h")
+require("ffi/inkview_h")
 
-local KEY_POWER  = 0x01
-local KEY_DELETE = 0x08
-local KEY_OK     = 0x0a
-local KEY_UP     = 0x11
-local KEY_DOWN   = 0x12
-local KEY_LEFT   = 0x13
-local KEY_RIGHT  = 0x14
-local KEY_MINUS  = 0x15
-local KEY_PLUS   = 0x16
-local KEY_MENU   = 0x17
-local KEY_PREV   = 0x18
-local KEY_NEXT   = 0x19
-local KEY_HOME   = 0x1a
-local KEY_BACK   = 0x1b
-local KEY_PREV2  = 0x1c
-local KEY_NEXT2  = 0x1d
-local KEY_COVEROPEN = 0x02
-local KEY_COVERCLOSE = 0x03
-
-local CONNECTING = 1
-local CONNECTED = 2
-local NET_OK = 0
--- luacheck: pop
-
-ffi.cdef[[
-char *GetSoftwareVersion(void);
-char *GetDeviceModel(void);
-int GetNetState(void);
-int NetConnect(const char *name);
-int NetDisconnect();
-]]
+-- FIXME: Signal ffi/input.lua (brought in by device/input later on) that we want to use poll mode backend.
+-- Remove this once backend becomes poll-only.
+_G.POCKETBOOK_FFI = true
 
 local function yes() return true end
 local function no() return false end
 
+local ext_path = "/mnt/ext1/system/config/extensions.cfg"
+local app_name = "koreader.app"
 
 local PocketBook = Generic:new{
     model = "PocketBook",
     isPocketBook = yes,
-    isInBackGround = false,
     hasOTAUpdates = yes,
     hasWifiToggle = yes,
     isTouchDevice = yes,
     hasKeys = yes,
     hasFrontlight = yes,
     canSuspend = no,
-    emu_events_dev = "/dev/shm/emu_events",
+    canReboot = yes,
+    canPowerOff = yes,
+    needsScreenRefreshAfterResume = no,
     home_dir = "/mnt/ext1",
+
+    -- all devices that have warmth lights use inkview api
+    hasNaturalLightApi = yes,
+
+    -- NOTE: Apparently, HW inversion is a pipedream on PB (#6669), ... well, on sunxi chipsets anyway.
+    -- For which we now probe in fbinfoOverride() and tweak the flag to "no".
+    -- NTX chipsets *should* work (PB631), but in case it doesn't on your device, set this to "no" in here.
+    canHWInvert = yes,
+
+    -- If we can access the necessary devices, input events can be handled directly.
+    -- This improves latency (~40ms), as well as power usage - we can spend more time asleep,
+    -- instead of busy looping at 50Hz the way inkview insists on doing.
+    -- In case this method fails (no root), we fallback to classic inkview api.
+    raw_input = nil, --[[{
+        -- value or function to adjust touch matrix orientiation.
+        touch_rotation = -3+4,
+        -- Works same as input.event_map, but for raw input EV_KEY translation
+        keymap = { [scan] = event },
+    }]]
+    -- Runtime state: whether raw input is actually used
+    is_using_raw_input = nil,
+
+    -- Private per-model kludges
+    _fb_init = function() end,
+    _model_init = function() end,
 }
 
--- Make sure the C BB cannot be used on devices with a 24bpp fb
-function PocketBook:blacklistCBB()
-    local dummy = require("ffi/posix_h")
-    local C = ffi.C
-
-    -- As well as on those than can't do HW inversion, as otherwise NightMode would be ineffective.
-    --- @fixme Either relax the HWInvert check, or actually enable HWInvert on PB if it's safe and it works,
-    --        as, currently, no PB device is marked as canHWInvert, so, the C BB is essentially *always* blacklisted.
-    if not self:canUseCBB() or not self:canHWInvert() then
-        logger.info("Blacklisting the C BB on this device")
-        if ffi.os == "Windows" then
-            C._putenv("KO_NO_CBB=true")
-        else
-            C.setenv("KO_NO_CBB", "true", 1)
-        end
-        -- Enforce the global setting, too, so the Dev menu is accurate...
-        G_reader_settings:saveSetting("dev_no_c_blitter", true)
+-- Helper to try load externally signalled book whenever we're brought to foreground
+local function tryOpenBook()
+    local path = os.getenv("KO_PATH_OPEN_BOOK")
+    if not path then return end
+    local fi = io.open(path, "r")
+    if not fi then return end
+    local fn = fi:read("*line")
+    fi:close()
+    os.remove(path)
+    if fn and util.pathExists(fn) then
+        require("apps/reader/readerui"):showReader(fn)
     end
 end
 
 function PocketBook:init()
-    -- Blacklist the C BB before the first BB require...
-    self:blacklistCBB()
+    local raw_input = self.raw_input
+    local touch_rotation = raw_input and raw_input.touch_rotation or 0
 
-    self.screen = require("ffi/framebuffer_mxcfb"):new{device = self, debug = logger.dbg}
-    self.powerd = require("device/pocketbook/powerd"):new{device = self}
+    self.screen = require("ffi/framebuffer_mxcfb"):new {
+        device = self,
+        debug = logger.dbg,
+        wf_level = G_reader_settings:readSetting("wf_level") or 0,
+        fbinfoOverride = function(fb, finfo, vinfo)
+            -- Device model caps *can* set both to indicate that either will work to get correct orientation.
+            -- But for FB backend, the flags are mutually exclusive, so we nuke one of em later.
+            fb.is_always_portrait = self.isAlwaysPortrait()
+            fb.forced_rotation = self.usingForcedRotation()
+            -- Tweak combination of alwaysPortrait/hwRot/hwInvert flags depending on probed HW and wf settings.
+            if fb:isB288() then
+                logger.dbg("mxcfb: Disabling hwinvert on B288 chipset")
+                self.canHWInvert = no
+                -- GL16 glitches with hwrot
+                if fb.wf_level == 3 then
+                    logger.dbg("mxcfb: Disabling hwrot on fast waveforms (B288 glitch)")
+                    fb.forced_rotation = nil
+                end
+            end
+            -- if hwrot is still on, nuke swrot
+            if fb.forced_rotation then
+                fb.is_always_portrait = false
+            end
+            return self._fb_init(fb, finfo, vinfo)
+        end,
+        -- raw touch input orientiation is different from the screen
+        getTouchRotation = function(fb)
+            if type(touch_rotation) == "function" then
+                return touch_rotation(self, fb:getRotationMode())
+            end
+            return (4 + fb:getRotationMode() + touch_rotation) % 4
+        end,
+    }
+
+    -- Whenever we lose focus, but also get suspended for real (we can't reliably tell atm),
+    -- plugins need to be notified to stop doing foreground stuff, and vice versa. To this end,
+    -- we maintain pseudo suspended state just to keep plugins happy, even though it's not
+    -- related real to suspend states.
+    local quasiSuspended
+
     self.input = require("device/input"):new{
         device = self,
-        event_map = {
-            [KEY_MENU] = "Menu",
-            [KEY_PREV] = "LPgBack",
-            [KEY_NEXT] = "LPgFwd",
-            [KEY_UP] = "Up",
-            [KEY_DOWN] = "Down",
-            [KEY_LEFT] = "Left",
-            [KEY_RIGHT] = "Right",
-            [KEY_OK] = "Press",
-        },
+        raw_input = raw_input,
+        event_map = setmetatable({
+            [C.KEY_MENU] = "Menu",
+            [C.KEY_PREV] = "LPgBack",
+            [C.KEY_NEXT] = "LPgFwd",
+            [C.KEY_UP] = "Up",
+            [C.KEY_DOWN] = "Down",
+            [C.KEY_LEFT] = "Left",
+            [C.KEY_RIGHT] = "Right",
+            [C.KEY_OK] = "Press",
+        }, {__index=raw_input and raw_input.keymap or {}}),
         handleMiscEv = function(this, ev)
-            if ev.code == EVT_BACKGROUND then
-                self.isInBackGround = true
-                return "Suspend"
-            elseif ev.code == EVT_FOREGROUND then
-                if self.isInBackGround then
-                    self.isInBackGround = false
+            local ui = require("ui/uimanager")
+            if ev.code == C.EVT_HIDE or ev.code == C.EVT_BACKGROUND then
+                ui:flushSettings()
+                if not quasiSuspended then
+                    quasiSuspended = true
+                    return "Suspend"
+                end
+            elseif ev.code == C.EVT_FOREGROUND or ev.code == C.EVT_SHOW then
+                tryOpenBook()
+                ui:setDirty('all', 'ui')
+                if quasiSuspended then
+                    quasiSuspended = false
                     return "Resume"
                 end
             end
@@ -125,60 +156,132 @@ function PocketBook:init()
     -- here.
     -- Unhandled events will leave Input:waitEvent() as "GenericInput"
     self.input:registerEventAdjustHook(function(_input, ev)
-        if ev.type == EVT_KEYDOWN or ev.type == EVT_KEYUP then
-            ev.value = ev.type == EVT_KEYDOWN and 1 or 0
-            ev.type = 1 -- linux/input.h Key-Event
+        if ev.type == C.EVT_KEYDOWN or ev.type == C.EVT_KEYUP then
+            ev.value = ev.type == C.EVT_KEYDOWN and 1 or 0
+            ev.type = C.EV_KEY
         end
 
-        -- handle EVT_BACKGROUND and EVT_FOREGROUND as MiscEvent as this makes
+        -- handle C.EVT_BACKGROUND and C.EVT_FOREGROUND as MiscEvent as this makes
         -- it easy to return a string directly which can be used in
         -- uimanager.lua as event_handler index.
-        if ev.type == EVT_BACKGROUND or ev.type == EVT_FOREGROUND then
+        if ev.type == C.EVT_BACKGROUND or ev.type == C.EVT_FOREGROUND
+        or ev.type == C.EVT_SHOW or ev.type == C.EVT_HIDE then
             ev.code = ev.type
-            ev.type = 4 -- handle as MiscEvent, see above
+            ev.type = C.EV_MSC -- handle as MiscEvent, see above
         end
 
         -- auto shutdown event from inkview framework, gracefully close
         -- everything and let the framework shutdown the device
-        if ev.type == EVT_EXIT then
+        if ev.type == C.EVT_EXIT then
             require("ui/uimanager"):broadcastEvent(
                 require("ui/event"):new("Close"))
         end
     end)
 
-    -- fix rotation for Color Lux device
-    if PocketBook:getDeviceModel() == "PocketBook Color Lux" then
-        self.screen.blitbuffer_rotation_mode = self.screen.ORIENTATION_PORTRAIT
-        self.screen.native_rotation_mode = self.screen.ORIENTATION_PORTRAIT
+    self._model_init()
+    if (not self.input.raw_input) or (not pcall(self.input.open, self.input, self.raw_input)) then
+        inkview.OpenScreen()
+        -- Raw mode open failed (no permissions?), so we'll run the usual way.
+        -- Disable touch coordinate translation as inkview will do that.
+        self.input.raw_input = nil
+        self.input:open()
+        touch_rotation = 0
+    else
+        self.canSuspend = yes
     end
-
-    os.remove(self.emu_events_dev)
-    os.execute("mkfifo " .. self.emu_events_dev)
-    self.input.open(self.emu_events_dev, 1)
+    self.powerd = require("device/pocketbook/powerd"):new{device = self}
+    self:setAutoStandby(true)
     Generic.init(self)
 end
 
-function PocketBook:supportsScreensaver() return true end
+function PocketBook:notifyBookState(title, document)
+    local fn = document and document.file or nil
+    logger.dbg("Notify book state", title or "[nil]", fn or "[nil]")
+    os.remove("/tmp/.current")
+    if fn then
+        local fo = io.open("/tmp/.current", "w+")
+        fo:write(fn)
+        fo:close()
+    end
+    inkview.SetSubtaskInfo(inkview.GetCurrentTask(), 0, title and (title .. " - koreader") or "koreader", fn)
+end
 
 function PocketBook:setDateTime(year, month, day, hour, min, sec)
     if hour == nil or min == nil then return true end
+    -- If the device is rooted, we might actually have a fighting chance to change os clock.
+    local su = "/mnt/secure/su"
+    su = util.pathExists(su) and (su .. " ") or ""
     local command
     if year and month and day then
-        command = string.format("date -s '%d-%d-%d %d:%d:%d'", year, month, day, hour, min, sec)
+        command = string.format(su .. "/bin/date -s '%d-%d-%d %d:%d:%d'", year, month, day, hour, min, sec)
     else
-        command = string.format("date -s '%d:%d'",hour, min)
+        command = string.format(su .. "/bin/date -s '%d:%d'",hour, min)
     end
     if os.execute(command) == 0 then
-        os.execute('hwclock -u -w')
+        os.execute(su .. '/sbin/hwclock -u -w')
         return true
     else
         return false
     end
 end
 
+-- Predicate, so no self
+function PocketBook.canAssociateFileExtensions()
+    local f = io.open(ext_path, "r")
+    if not f then return true end
+    local l = f:read("*line")
+    f:close()
+    if l and not l:match("^#koreader") then
+        return false
+    end
+    return true
+end
+
+function PocketBook:associateFileExtensions(assoc)
+    -- First load the system-wide table, from which we'll snoop file types and icons
+    local info = {}
+    for l in io.lines("/ebrmain/config/extensions.cfg") do
+        local m = { l:match("^([^:]*):([^:]*):([^:]*):([^:]*):(.*)") }
+        info[m[1]] = m
+    end
+    local res = {"#koreader"}
+    for k,v in pairs(assoc) do
+        local t = info[k]
+        if t then
+            -- A system entry exists, so just change app, and reuse the rest
+            t[4] = app_name .. "," .. t[4]
+        else
+            -- Doesn't exist, so hallucinate up something
+            -- TBD: We have document opener in 'v', maybe consult mime in there?
+            local bn = k:match("%a+"):upper()
+            t = { k, '@' .. bn .. '_file', "1", app_name, "ICON_" .. bn }
+        end
+        table.insert(res, table.concat(t, ":"))
+    end
+    local out = io.open(ext_path, "w+")
+    out:write(table.concat(res, "\n"))
+    out:close()
+end
+
+function PocketBook:setAutoStandby(isAllowed)
+    inkview.iv_sleepmode(isAllowed and 1 or 0)
+end
+
+function PocketBook:powerOff()
+    inkview.PowerOff()
+end
+
+function PocketBook:suspend()
+    inkview.SendGlobalRequest(C.REQ_KEYLOCK)
+end
+
+function PocketBook:reboot()
+    inkview.iv_ipc_request(C.MSG_REBOOT, 1, nil, 0, 0)
+end
+
 function PocketBook:initNetworkManager(NetworkMgr)
     function NetworkMgr:turnOnWifi(complete_callback)
-        if inkview.NetConnect(nil) ~= NET_OK then
+        if inkview.NetConnect(nil) ~= C.NET_OK then
             logger.info('NetConnect failed')
         end
         if complete_callback then
@@ -194,7 +297,7 @@ function PocketBook:initNetworkManager(NetworkMgr)
     end
 
     function NetworkMgr:isWifiOn()
-        return inkview.GetNetState() == CONNECTED
+        return band(inkview.QueryNetwork(), C.CONNECTED) ~= 0
     end
 end
 
@@ -206,144 +309,239 @@ function PocketBook:getDeviceModel()
     return ffi.string(inkview.GetDeviceModel())
 end
 
--- PocketBook InkPad
-local PocketBook840 = PocketBook:new{
-    model = "PBInkPad",
-    display_dpi = 250,
-}
+-- Pocketbook HW rotation modes start from landsape, CCW
+local function landscape_ccw() return {
+    1, 0, 3, 2,         -- PORTRAIT, LANDSCAPE, PORTRAIT_180, LANDSCAPE_180
+    every_paint = true, -- inkview will try to steal the rot mode frequently
+    restore = false,    -- no need, because everything using inkview forces 3 on focus
+    default = nil,      -- usually 3
+} end
 
--- PocketBook 515
+-- PocketBook Mini (515)
 local PocketBook515 = PocketBook:new{
     model = "PB515",
     display_dpi = 200,
     isTouchDevice = no,
-    hasWifiToggle = no,
+    hasFrontlight = no,
     hasDPad = yes,
     hasFewKeys = yes,
 }
 
--- PocketBoot 613 Basic
+-- PocketBook 606 (606)
+local PocketBook606 = PocketBook:new{
+    model = "PB606",
+    display_dpi = 212,
+    isTouchDevice = no,
+    hasFrontlight = no,
+    hasDPad = yes,
+    hasFewKeys = yes,
+}
+
+-- PocketBook Basic (611)
+local PocketBook611 = PocketBook:new{
+    model = "PB611",
+    display_dpi = 167,
+    isTouchDevice = no,
+    hasFrontlight = no,
+    hasDPad = yes,
+    hasFewKeys = yes,
+}
+
+-- PocketBook Basic (613)
 local PocketBook613 = PocketBook:new{
     model = "PB613B",
     display_dpi = 167,
     isTouchDevice = no,
     hasWifiToggle = no,
+    hasFrontlight = no,
     hasDPad = yes,
     hasFewKeys = yes,
 }
 
--- PocketBook 614W Basic
+-- PocketBook Basic 2 / Basic 3 (614/614W)
 local PocketBook614W = PocketBook:new{
     model = "PB614W",
     display_dpi = 167,
     isTouchDevice = no,
-    hasWifiToggle = no,
     hasFrontlight = no,
     hasDPad = yes,
     hasFewKeys = yes,
 }
 
--- PocketBook Basic Lux 2
+-- PocketBook Basic Lux / 615 Plus (615/615W)
+local PocketBook615 = PocketBook:new{
+    model = "PBBLux",
+    display_dpi = 212,
+    isTouchDevice = no,
+    hasDPad = yes,
+    hasFewKeys = yes,
+}
+
+-- PocketBook Basic Lux 2 (616/616W)
 local PocketBook616 = PocketBook:new{
     model = "PBBLux2",
     display_dpi = 212,
     isTouchDevice = no,
-    hasWifiToggle = no,
     hasDPad = yes,
     hasFewKeys = yes,
 }
 
--- PocketBook Lux 4
-local PocketBook627 = PocketBook:new{
-    model = "PBLux4",
-    display_dpi = 212,
-}
-
--- PocketBook Touch HD
-local PocketBook631 = PocketBook:new{
-    model = "PBTouchHD",
-    display_dpi = 300,
-}
-
--- PocketBook Touch HD Plus
-local PocketBook632 = PocketBook:new{
-    model = "PBTouchHDPlus",
-    display_dpi = 300,
-    isAlwaysPortrait = yes,
-}
-
--- PocketBook Lux 3
-local PocketBook626 = PocketBook:new{
-    model = "PBLux3",
-    display_dpi = 212,
-}
-
--- PocketBook Basic Touch
-local PocketBook624 = PocketBook:new{
-    model = "PBBasicTouch",
-    hasFrontlight = no,
-    display_dpi = 166,
-}
-
--- PocketBook Basic Touch 2
-local PocketBook625 = PocketBook:new{
-    model = "PBBasicTouch2",
-    hasFrontlight = no,
-    display_dpi = 166,
-}
-
--- PocketBook Touch
+-- PocketBook Touch (622)
 local PocketBook622 = PocketBook:new{
     model = "PBTouch",
+    display_dpi = 167,
     hasFrontlight = no,
-    display_dpi = 166,
 }
 
--- PocketBook Touch Lux
+-- PocketBook Touch Lux (623)
 local PocketBook623 = PocketBook:new{
     model = "PBTouchLux",
     display_dpi = 212,
 }
 
--- PocketBook InkPad 3
-local PocketBook740 = PocketBook:new{
-    model = "PBInkPad3",
-    isAlwaysPortrait = yes,
-    display_dpi = 300,
+-- PocketBook Basic Touch (624)
+local PocketBook624 = PocketBook:new{
+    model = "PBBasicTouch",
+    display_dpi = 167,
+    hasFrontlight = no,
 }
 
--- PocketBook InkPad 3 Pro
-local PocketBook740_2 = PocketBook:new{
-    model = "PBInkPad3Pro",
-    isAlwaysPortrait = yes,
-    display_dpi = 300,
+-- PocketBook Basic Touch 2 (625)
+local PocketBook625 = PocketBook:new{
+    model = "PBBasicTouch2",
+    display_dpi = 167,
+    hasFrontlight = no,
 }
 
--- PocketBook InkPad X
-local PocketBook1040 = PocketBook:new{
-    model = "PB1040",
-    isAlwaysPortrait = yes,
-    display_dpi = 227,
+-- PocketBook Touch Lux 2 / Touch Lux 3 (626)
+local PocketBook626 = PocketBook:new{
+    model = "PBLux3",
+    display_dpi = 212,
 }
 
--- PocketBook Sense
+-- PocketBook Touch Lux 4 (627)
+local PocketBook627 = PocketBook:new{
+    model = "PBLux4",
+    display_dpi = 212,
+}
+
+-- PocketBook Touch Lux 5 (628)
+local PocketBook628 = PocketBook:new{
+    model = "PBTouchLux5",
+    display_dpi = 212,
+    isAlwaysPortrait = yes,
+    usingForcedRotation = landscape_ccw,
+    hasNaturalLight = yes,
+}
+
+-- PocketBook Sense / Sense 2 (630)
 local PocketBook630 = PocketBook:new{
     model = "PBSense",
     display_dpi = 212,
 }
 
--- PocketBook Aqua 2
+-- PocketBook Touch HD / Touch HD 2 (631)
+local PocketBook631 = PocketBook:new{
+    model = "PBTouchHD",
+    display_dpi = 300,
+    -- see https://github.com/koreader/koreader/pull/6531#issuecomment-676629182
+    hasNaturalLight = function() return inkview.GetFrontlightColor() >= 0 end,
+}
+
+-- PocketBook Touch HD Plus / Touch HD 3 (632)
+local PocketBook632 = PocketBook:new{
+    model = "PBTouchHDPlus",
+    display_dpi = 300,
+    isAlwaysPortrait = yes,
+    usingForcedRotation = landscape_ccw,
+    hasNaturalLight = yes,
+}
+
+-- PocketBook Color (633)
+local PocketBook633 = PocketBook:new{
+    model = "PBColor",
+    display_dpi = 300,
+    hasColorScreen = yes,
+    canUseCBB = no, -- 24bpp
+    isAlwaysPortrait = yes,
+    usingForcedRotation = landscape_ccw,
+}
+
+-- PocketBook Aqua (640)
+local PocketBook640 = PocketBook:new{
+    model = "PBAqua",
+    display_dpi = 167,
+}
+
+-- PocketBook Aqua 2 (641)
 local PocketBook641 = PocketBook:new{
     model = "PBAqua2",
     display_dpi = 212,
 }
 
--- PocketBook Color Lux
+-- PocketBook Ultra (650)
+local PocketBook650 = PocketBook:new{
+    model = "PBUltra",
+    display_dpi = 212,
+}
+
+-- PocketBook InkPad 3 (740)
+local PocketBook740 = PocketBook:new{
+    model = "PBInkPad3",
+    display_dpi = 300,
+    isAlwaysPortrait = yes,
+    usingForcedRotation = landscape_ccw,
+    hasNaturalLight = yes,
+}
+
+-- PocketBook InkPad 3 Pro (740_2)
+local PocketBook740_2 = PocketBook:new{
+    model = "PBInkPad3Pro",
+    display_dpi = 300,
+    isAlwaysPortrait = yes,
+    usingForcedRotation = landscape_ccw,
+    hasNaturalLight = yes,
+    raw_input = {
+        touch_rotation = -1,
+        keymap = {
+            [115] = "Menu",
+            [109] = "LPgFwd",
+            [104] = "LPgBack",
+        }
+    }
+}
+
+-- PocketBook Color Lux (801)
 local PocketBookColorLux = PocketBook:new{
     model = "PBColorLux",
+    display_dpi = 125,
     hasColorScreen = yes,
-    has3BytesWideFrameBuffer = yes,
     canUseCBB = no, -- 24bpp
+}
+function PocketBookColorLux:_model_init()
+    self.screen.blitbuffer_rotation_mode = self.screen.ORIENTATION_PORTRAIT
+    self.screen.native_rotation_mode = self.screen.ORIENTATION_PORTRAIT
+end
+function PocketBookColorLux._fb_init(fb,finfo,vinfo)
+    -- Pocketbook Color Lux reports bits_per_pixel = 8, but actually uses an RGB24 framebuffer
+    vinfo.bits_per_pixel = 24
+    vinfo.xres = vinfo.xres / 3
+    fb.refresh_pixel_size = 3
+end
+
+-- PocketBook InkPad / InkPad 2 (840)
+local PocketBook840 = PocketBook:new{
+    model = "PBInkPad",
+    display_dpi = 250,
+}
+
+-- PocketBook InkPad X (1040)
+local PocketBook1040 = PocketBook:new{
+    model = "PB1040",
+    display_dpi = 227,
+    isAlwaysPortrait = yes,
+    usingForcedRotation = landscape_ccw,
+    hasNaturalLight = yes,
 }
 
 logger.info('SoftwareVersion: ', PocketBook:getSoftwareVersion())
@@ -352,12 +550,19 @@ local codename = PocketBook:getDeviceModel()
 
 if codename == "PocketBook 515" then
     return PocketBook515
+elseif codename == "PB606" or codename == "PocketBook 606" then
+    return PocketBook606
+elseif codename == "PocketBook 611" then
+    return PocketBook611
 elseif codename == "PocketBook 613" then
     return PocketBook613
-elseif codename == "PocketBook 614W" then
+elseif codename == "PocketBook 614" or codename == "PocketBook 614W" then
     return PocketBook614W
-elseif codename == "PB616W" or
-    codename == "PocketBook 616" then
+elseif codename == "PB615" or codename == "PB615W" or
+    codename == "PocketBook 615" or codename == "PocketBook 615W" then
+    return PocketBook615
+elseif codename == "PB616" or codename == "PB616W" or
+    codename == "PocketBook 616" or codename == "PocketBook 616W" then
     return PocketBook616
 elseif codename == "PocketBook 622" then
     return PocketBook622
@@ -372,22 +577,30 @@ elseif codename == "PB626" or codename == "PB626(2)-TL3" or
     return PocketBook626
 elseif codename == "PB627" then
     return PocketBook627
+elseif codename == "PB628" then
+    return PocketBook628
 elseif codename == "PocketBook 630" then
     return PocketBook630
-elseif codename == "PB631" then
+elseif codename == "PB631" or codename == "PocketBook 631" then
     return PocketBook631
 elseif codename == "PB632" then
     return PocketBook632
+elseif codename == "PB633" then
+    return PocketBook633
+elseif codename == "PB640" or codename == "PocketBook 640" then
+    return PocketBook640
 elseif codename == "PB641" then
     return PocketBook641
+elseif codename == "PB650" or codename == "PocketBook 650" then
+    return PocketBook650
 elseif codename == "PB740" then
     return PocketBook740
 elseif codename == "PB740-2" then
     return PocketBook740_2
-elseif codename == "PB1040" then
-    return PocketBook1040
 elseif codename == "PocketBook 840" then
     return PocketBook840
+elseif codename == "PB1040" then
+    return PocketBook1040
 elseif codename == "PocketBook Color Lux" then
     return PocketBookColorLux
 else

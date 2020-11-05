@@ -1,3 +1,4 @@
+local Dispatcher = require("dispatcher")
 local InputContainer = require("ui/widget/container/inputcontainer")
 local LoginDialog = require("ui/widget/logindialog")
 local InfoMessage = require("ui/widget/infomessage")
@@ -9,7 +10,7 @@ local Event = require("ui/event")
 local Math = require("optmath")
 local Screen = Device.screen
 local logger = require("logger")
-local md5 = require("ffi/MD5")
+local md5 = require("ffi/sha2").md5
 local random = require("random")
 local T = require("ffi/util").template
 local _ = require("gettext")
@@ -17,14 +18,6 @@ local _ = require("gettext")
 if not G_reader_settings:readSetting("device_id") then
     G_reader_settings:saveSetting("device_id", random.uuid())
 end
-
--- DAUTO_SAVE_PAGING_COUNT was set to nil in defaults.lua, but
--- could be overriden in defaults.persistent.lua with a value
--- that was also used here as the interval for auto sync.
--- DAUTO_SAVE_PAGING_COUNT has been removed, but let's allow
--- this plugin to still pick it from defaults.persistent.lua.
---- @todo make this tunable via an added menu item below
-local SYNC_PAGING_COUNT = DAUTO_SAVE_PAGING_COUNT -- luacheck: ignore
 
 local KOSync = InputContainer:new{
     name = "kosync",
@@ -105,12 +98,18 @@ local function validateUser(user, pass)
     end
 end
 
+function KOSync:onDispatcherRegisterActions()
+    Dispatcher:registerAction("kosync_push_progress", { category="none", event="KOSyncPushProgress", title=_("Push progress from this device"), rolling=true, paging=true,})
+    Dispatcher:registerAction("kosync_pull_progress", { category="none", event="KOSyncPullProgress", title=_("Pull progress from other devices"), rolling=true, paging=true, separator=true,})
+end
+
 function KOSync:onReaderReady()
     local settings = G_reader_settings:readSetting("kosync") or {}
     self.kosync_custom_server = settings.custom_server
     self.kosync_username = settings.username
     self.kosync_userkey = settings.userkey
     self.kosync_auto_sync = not (settings.auto_sync == false)
+    self.kosync_pages_before_update = settings.pages_before_update
     self.kosync_whisper_forward = settings.whisper_forward or SYNC_STRATEGY.DEFAULT_FORWARD
     self.kosync_whisper_backward = settings.whisper_backward or SYNC_STRATEGY.DEFAULT_BACKWARD
     self.kosync_device_id = G_reader_settings:readSetting("device_id")
@@ -119,6 +118,7 @@ function KOSync:onReaderReady()
         self:_onResume()
     end
     self:registerEvents()
+    self:onDispatcherRegisterActions()
     self.ui.menu:registerToMainMenu(self)
     -- Make sure checksum has been calculated at the very first time a document has been opened, to
     -- avoid document saving feature to impact the checksum, and eventually impact the document
@@ -165,6 +165,7 @@ function KOSync:addToMainMenu(menu_items)
                         -- current progress now to avoid to lose it silently.
                         self:updateProgress(true)
                     end
+                    self:saveSettings()
                 end,
             },
             {
@@ -274,8 +275,37 @@ function KOSync:addToMainMenu(menu_items)
                     }
                 end,
             },
+            {
+                text = _("Sync every # pages"),
+                keep_menu_open = true,
+                callback = function()
+                    local SpinWidget = require("ui/widget/spinwidget")
+                    local items = SpinWidget:new{
+                        text = _([[This value determines how many page turns it takes to update book progress.
+If set to 0, updating progress based on page turns will be disabled.]]),
+                        width = math.floor(Screen:getWidth() * 0.6),
+                        value = self.kosync_pages_before_update or 0,
+                        value_min = 0,
+                        value_max = 999,
+                        value_step = 1,
+                        value_hold_step = 10,
+                        ok_text = _("Set"),
+                        title_text = _("Number of pages before update"),
+                        default_value = 0,
+                        callback = function(spin)
+                            self:setPagesBeforeUpdate(spin.value)
+                        end
+                    }
+                    UIManager:show(items)
+                end,
+            },
         }
     }
+end
+
+function KOSync:setPagesBeforeUpdate(pages_before_update)
+    self.kosync_pages_before_update = pages_before_update > 0 and pages_before_update or nil
+    self:saveSettings()
 end
 
 function KOSync:setCustomServer(server)
@@ -295,10 +325,10 @@ function KOSync:setWhisperBackward(strategy)
 end
 
 function KOSync:login()
-    if not NetworkMgr:isOnline() then
-        NetworkMgr:promptWifiOn()
+    if NetworkMgr:willRerunWhenOnline(function() self:login() end) then
         return
     end
+
     self.login_dialog = LoginDialog:new{
         title = self.title,
         username = self.kosync_username or "",
@@ -386,7 +416,7 @@ function KOSync:doRegister(username, password)
     }
     -- on Android to avoid ANR (no-op on other platforms)
     Device:setIgnoreInput(true)
-    local userkey = md5.sum(password)
+    local userkey = md5(password)
     local ok, status, body = pcall(client.register, client, username, userkey)
     if not ok then
         if status then
@@ -422,7 +452,7 @@ function KOSync:doLogin(username, password)
         service_spec = self.path .. "/api.json"
     }
     Device:setIgnoreInput(true)
-    local userkey = md5.sum(password)
+    local userkey = md5(password)
     local ok, status, body = pcall(client.authorize, client, username, userkey)
     if not ok then
         if status then
@@ -493,6 +523,10 @@ function KOSync:updateProgress(manual)
         return
     end
 
+    if manual and NetworkMgr:willRerunWhenOnline(function() self:updateProgress(manual) end) then
+        return
+    end
+
     local KOSyncClient = require("KOSyncClient")
     local client = KOSyncClient:new{
         custom_url = self.kosync_custom_server,
@@ -534,6 +568,10 @@ function KOSync:getProgress(manual)
         if manual then
             promptLogin()
         end
+        return
+    end
+
+    if manual and NetworkMgr:willRerunWhenOnline(function() self:getProgress(manual) end) then
         return
     end
 
@@ -653,6 +691,7 @@ function KOSync:saveSettings()
         username = self.kosync_username,
         userkey = self.kosync_userkey,
         auto_sync = self.kosync_auto_sync,
+        pages_before_update = self.kosync_pages_before_update,
         whisper_forward =
               (self.kosync_whisper_forward == SYNC_STRATEGY.DEFAULT_FORWARD
                and nil
@@ -683,9 +722,7 @@ function KOSync:_onPageUpdate(page)
         self.last_page = page
         self.last_page_turn_ticks = os.time()
         self.page_update_times = self.page_update_times + 1
-        if SYNC_PAGING_COUNT ~= nil
-        and (SYNC_PAGING_COUNT <= 0
-             or self.page_update_times == SYNC_PAGING_COUNT) then
+        if self.kosync_pages_before_update and self.page_update_times == self.kosync_pages_before_update then
             self.page_update_times = 0
             UIManager:scheduleIn(1, function() self:updateProgress() end)
         end

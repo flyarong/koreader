@@ -3,6 +3,8 @@ local CenterContainer = require("ui/widget/container/centercontainer")
 local ConfirmBox = require("ui/widget/confirmbox")
 local Device = require("device")
 local Event = require("ui/event")
+local Font = require("ui/font")
+local FontList = require("fontlist")
 local Input = Device.input
 local InputContainer = require("ui/widget/container/inputcontainer")
 local Menu = require("ui/widget/menu")
@@ -60,12 +62,17 @@ function ReaderFont:init()
     -- Font list
     local face_list = cre.getFontFaces()
     for k,v in ipairs(face_list) do
+        local font_filename, font_faceindex = cre.getFontFaceFilenameAndFaceIndex(v)
         table.insert(self.face_table, {
             text_func = function()
                 -- defaults are hardcoded in credocument.lua
                 local default_font = G_reader_settings:readSetting("cre_font") or self.ui.document.default_font
                 local fallback_font = G_reader_settings:readSetting("fallback_font") or self.ui.document.fallback_fonts[1]
                 local text = v
+                if font_filename and font_faceindex then
+                    text = FontList:getLocalizedFontName(font_filename, font_faceindex) or text
+                end
+
                 if v == default_font then
                     text = text .. "   ★"
                 end
@@ -73,6 +80,13 @@ function ReaderFont:init()
                     text = text .. "   �"
                 end
                 return text
+            end,
+            font_func = function(size)
+                if G_reader_settings:nilOrTrue("font_menu_use_font_face") then
+                    if font_filename and font_faceindex then
+                        return Font:getFace(font_filename, size, font_faceindex)
+                    end
+                end
             end,
             callback = function()
                 self:setFont(v)
@@ -84,7 +98,6 @@ function ReaderFont:init()
                 return v == self.font_face
             end
         })
-        face_list[k] = {text = v}
     end
     self.ui.menu:registerToMainMenu(self)
 end
@@ -353,7 +366,7 @@ end
 function ReaderFont:getFontSettingsTable()
     local settings_table = {}
 
-    if Device:isAndroid() or Device:isDesktop() or Device:isEmulator() then
+    if Device:isAndroid() or Device:isDesktop() or Device:isEmulator() or Device:isPocketBook() then
         for _, item in ipairs(require("ui/elements/font_settings"):getSystemFontMenuItems()) do
             table.insert(settings_table, item)
         end
@@ -361,12 +374,24 @@ function ReaderFont:getFontSettingsTable()
     end
 
     table.insert(settings_table, {
+        text = _("Display font names with their own font"),
+        checked_func = function()
+            return G_reader_settings:nilOrTrue("font_menu_use_font_face")
+        end,
+        callback = function()
+            G_reader_settings:flipNilOrTrue("font_menu_use_font_face")
+        end,
+        help_text = _([[In the font menu, display each font name with its own font face.]]),
+        separator = true,
+    })
+
+    table.insert(settings_table, {
         text = _("Use additional fallback fonts"),
         checked_func = function()
             return G_reader_settings:nilOrTrue("additional_fallback_fonts")
         end,
         callback = function()
-        G_reader_settings:flipNilOrTrue("additional_fallback_fonts")
+            G_reader_settings:flipNilOrTrue("additional_fallback_fonts")
             self.ui.document:setupFallbackFontFaces()
             self.ui:handleEvent(Event:new("UpdatePos"))
         end,
@@ -397,7 +422,7 @@ If that font happens to be part of this list already, it will be used first.]]),
 end
 
 -- Default sample file
-local FONT_TEST_DEFAULT_SAMPLE_PATH = "frontend/ui/elements/font-test-sample-default.html"
+local FONT_TEST_DEFAULT_SAMPLE_PATH = "frontend/ui/elements/font-test-sample-default.template"
 -- Users can set their own sample file, that will be used if found
 local FONT_TEST_USER_SAMPLE_PATH = require("datastorage"):getSettingsDir() .. "/font-test-sample.html"
 -- This document will be generated in the home or default directory

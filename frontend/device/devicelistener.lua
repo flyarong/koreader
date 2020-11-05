@@ -9,9 +9,19 @@ local bit = require("bit")
 local _ = require("gettext")
 local T = require("ffi/util").template
 
-local DeviceListener = InputContainer:new{
-    steps_fl = { 0.1, 0.1, 0.2, 0.4, 0.7, 1.1, 1.6, 2.2, 2.9, 3.7, 4.6, 5.6, 6.7, 7.9, 9.2, 10.6, },
-}
+local DeviceListener = InputContainer:new{}
+
+local function _setSetting(name)
+    G_reader_settings:saveSetting(name, true)
+end
+
+local function _unsetSetting(name)
+    G_reader_settings:delSetting(name)
+end
+
+local function _toggleSetting(name)
+    G_reader_settings:flipNilOrFalse(name)
+end
 
 function DeviceListener:onToggleNightMode()
     local night_mode = G_reader_settings:isTrue("night_mode")
@@ -26,10 +36,6 @@ function DeviceListener:onSetNightMode(night_mode_on)
     if night_mode_on ~= night_mode then
         self:onToggleNightMode()
     end
-end
-
-local function lightFrontlight()
-    return Device:hasLightLevelFallback() and G_reader_settings:nilOrTrue("light_fallback")
 end
 
 function DeviceListener:onShowIntensity()
@@ -51,8 +57,10 @@ end
 function DeviceListener:onShowWarmth(value)
     local powerd = Device:getPowerDevice()
     if powerd.fl_warmth ~= nil then
+        -- powerd.fl_warmth holds the warmth-value in the internal koreader scale [0,100]
+        -- powerd.fl_warmth_max is the maximum value the hardware accepts
         UIManager:show(Notification:new{
-            text = T(_("Warmth set to %1."), powerd.fl_warmth),
+            text = T(_("Warmth set to %1."), math.floor(powerd.fl_warmth/100*powerd.fl_warmth_max)),
             timeout = 1.0,
         })
     end
@@ -62,13 +70,20 @@ end
 -- frontlight controller
 if Device:hasFrontlight() then
 
-    -- direction +1 - increase frontlight
-    -- direction -1 - decrease frontlight
-    function DeviceListener:onChangeFlIntensity(ges, direction)
-        local powerd = Device:getPowerDevice()
+    local function calculateGestureDelta(ges, direction, min, max)
         local delta_int
-        --received gesture
         if type(ges) == "table" then
+            -- here we are using just two scales
+            -- big scale is for high dynamic ranges (e.g. brightness from 1..100)
+            --           original scale maybe tuned by hand
+            -- small scale is for lower dynamic ranges (e.g. warmth from 1..10)
+            --           scale entries are calculated by math.round(1*sqrt(2)^n)
+            local steps_fl_big_scale = { 0.1, 0.1, 0.2, 0.4, 0.7, 1.1, 1.6, 2.2, 2.9, 3.7, 4.6, 5.6, 6.7, 7.9, 9.2, 10.6, }
+            local steps_fl_small_scale = { 1.0, 1.0, 2.0, 3.0, 4.0, 6.0, 8.1, 11.3 }
+            local steps_fl = steps_fl_big_scale
+            if (min - max) < 50  then
+                steps_fl = steps_fl_small_scale
+            end
             local gestureScale
             local scale_multiplier
             if ges.ges == "two_finger_swipe" then
@@ -79,6 +94,7 @@ if Device:hasFrontlight() then
             else
                 scale_multiplier = 1
             end
+
             if ges.direction == "south" or ges.direction == "north" then
                 gestureScale = Screen:getHeight() * scale_multiplier
             elseif ges.direction == "west" or ges.direction == "east" then
@@ -89,17 +105,17 @@ if Device:hasFrontlight() then
                 -- diagonal
                 gestureScale = math.sqrt(width * width + height * height) * scale_multiplier
             end
-            if powerd.fl_intensity == nil then return false end
 
             local steps_tbl = {}
-            local scale = (powerd.fl_max - powerd.fl_min) / 2 / 10.6
-            for i = 1, #self.steps_fl, 1 do
-                steps_tbl[i] = math.ceil(self.steps_fl[i] * scale)
+            local scale = (max - min) / steps_fl[#steps_fl] / 2 -- full swipe gives half scale
+            for i = 1, #steps_fl, 1 do
+                steps_tbl[i] = math.ceil(steps_fl[i] * scale)
             end
 
             if ges.distance == nil then
                 ges.distance = 1
             end
+
             local step = math.ceil(#steps_tbl * ges.distance / gestureScale)
             delta_int = steps_tbl[step] or steps_tbl[#steps_tbl]
         else
@@ -110,16 +126,33 @@ if Device:hasFrontlight() then
             -- set default value (increase frontlight)
             direction = 1
         end
-        local new_intensity = powerd.fl_intensity + direction * delta_int
+        return direction, delta_int
+    end
 
+    -- direction +1 - increase frontlight
+    -- direction -1 - decrease frontlight
+    function DeviceListener:onChangeFlIntensity(ges, direction)
+        local powerd = Device:getPowerDevice()
+        local delta_int
+        --received gesture
+
+        direction, delta_int = calculateGestureDelta(ges, direction, powerd.fl_min, powerd.fl_max)
+
+        local new_intensity = powerd.fl_intensity + direction * delta_int
         if new_intensity == nil then return true end
         -- when new_intensity <=0, toggle light off
+        self:onSetFlIntensity(new_intensity)
+        self:onShowIntensity()
+        return true
+    end
+
+    function DeviceListener:onSetFlIntensity(new_intensity)
+        local powerd = Device:getPowerDevice()
         if new_intensity <= 0 then
             powerd:turnOffFrontlight()
         else
             powerd:setIntensity(new_intensity)
         end
-        self:onShowIntensity()
         return true
     end
 
@@ -136,15 +169,6 @@ if Device:hasFrontlight() then
     -- direction +1 - increase frontlight warmth
     -- direction -1 - decrease frontlight warmth
     function DeviceListener:onChangeFlWarmth(ges, direction)
-        -- when using frontlight system settings
-        if lightFrontlight() then
-            UIManager:show(Notification:new{
-                text = _("Frontlight controlled by system settings."),
-                timeout = 2.5,
-            })
-            return true
-        end
-
         local powerd = Device:getPowerDevice()
         if powerd.fl_warmth == nil then return false end
 
@@ -158,57 +182,23 @@ if Device:hasFrontlight() then
 
         local delta_int
         --received gesture
-        if type(ges) == "table" then
-            local gestureScale
-            local scale_multiplier
-            if ges.ges == "two_finger_swipe" then
-                -- for backward compatibility
-                scale_multiplier = FRONTLIGHT_SENSITIVITY_DECREASE * 0.8
-            elseif ges.ges == "swipe" then
-                scale_multiplier = 0.8
-            else
-                scale_multiplier = 1
-            end
 
-            if ges.direction == "south" or ges.direction == "north" then
-                gestureScale = Screen:getHeight() * scale_multiplier
-            elseif ges.direction == "west" or ges.direction == "east" then
-                gestureScale = Screen:getWidth() * scale_multiplier
-            else
-                local width = Screen:getWidth()
-                local height = Screen:getHeight()
-                -- diagonal
-                gestureScale = math.sqrt(width * width + height * height) * scale_multiplier
-            end
+        direction, delta_int = calculateGestureDelta(ges, direction, powerd.fl_warmth_min, powerd.fl_warmth_max)
 
-            local steps_tbl = {}
-            local scale = (powerd.fl_max - powerd.fl_min) / 2 / 10.6
-            for i = 1, #self.steps_fl, 1 do
-                steps_tbl[i] = math.ceil(self.steps_fl[i] * scale)
-            end
+        local warmth = math.floor(powerd.fl_warmth + direction * delta_int * 100 / powerd.fl_warmth_max)
+        self:onSetFlWarmth(warmth)
+        self:onShowWarmth()
+        return true
+    end
 
-            if ges.distance == nil then
-                ges.distance = 1
-            end
-
-            local step = math.ceil(#steps_tbl * ges.distance / gestureScale)
-            delta_int = steps_tbl[step] or steps_tbl[#steps_tbl]
-        else
-            -- received amount to change
-            delta_int = ges
-        end
-        if direction ~= -1 and direction ~= 1 then
-            -- set default value (increase frontlight)
-            direction = 1
-        end
-        local warmth = powerd.fl_warmth + direction * delta_int
+    function DeviceListener:onSetFlWarmth(warmth)
+        local powerd = Device:getPowerDevice()
         if warmth > 100 then
             warmth = 100
         elseif warmth < 0 then
             warmth = 0
         end
         powerd:setWarmth(warmth)
-        self:onShowWarmth()
         return true
     end
 
@@ -221,14 +211,6 @@ if Device:hasFrontlight() then
     end
 
     function DeviceListener:onToggleFrontlight()
-        -- when using frontlight system settings
-        if lightFrontlight() then
-            UIManager:show(Notification:new{
-                text = _("Frontlight controlled by system settings."),
-                timeout = 2.5,
-            })
-            return true
-        end
         local powerd = Device:getPowerDevice()
         powerd:toggleFrontlight()
         local new_text
@@ -245,17 +227,14 @@ if Device:hasFrontlight() then
     end
 
     function DeviceListener:onShowFlDialog()
-        local FrontLightWidget = require("ui/widget/frontlightwidget")
-        UIManager:show(FrontLightWidget:new{
-            use_system_fl = Device:hasLightLevelFallback()
-        })
+        Device:showLightDialog()
     end
 
 end
 
 if Device:canToggleGSensor() then
     function DeviceListener:onToggleGSensor()
-        G_reader_settings:flipNilOrFalse("input_ignore_gsensor")
+        _toggleSetting("input_ignore_gsensor")
         Device:toggleGSensor(not G_reader_settings:isTrue("input_ignore_gsensor"))
         local new_text
         if G_reader_settings:isTrue("input_ignore_gsensor") then
@@ -271,10 +250,74 @@ if Device:canToggleGSensor() then
     end
 end
 
-function DeviceListener:onToggleRotation()
-    local arg = bit.band((Screen:getRotationMode() + 1), 3)
+function DeviceListener:onIterateRotation()
+    -- Simply rotate by 90° CW
+    local arg = bit.band(Screen:getRotationMode() + 1, 3)
     self.ui:handleEvent(Event:new("SetRotationMode", arg))
     return true
+end
+
+function DeviceListener:onInvertRotation()
+    -- Invert is always rota + 2, w/ wraparound
+    local arg = bit.band(Screen:getRotationMode() + 2, 3)
+    self.ui:handleEvent(Event:new("SetRotationMode", arg))
+    return true
+end
+
+function DeviceListener:onSwapRotation()
+    local rota = Screen:getRotationMode()
+    -- Portrait is always even, Landscape is always odd. For each of 'em, Landscape = Portrait + 1.
+    -- As such...
+    local arg
+    if bit.band(rota, 1) == 0 then
+        -- If Portrait, Landscape is +1
+        arg = bit.band(rota + 1, 3)
+    else
+        -- If Landscape, Portrait is -1
+        arg = bit.band(rota - 1, 3)
+    end
+    self.ui:handleEvent(Event:new("SetRotationMode", arg))
+    return true
+end
+
+function DeviceListener:onSetRefreshRates(day, night)
+    UIManager:setRefreshRate(day, night)
+end
+
+function DeviceListener:onSetBothRefreshRates(rate)
+    UIManager:setRefreshRate(rate, rate)
+end
+
+function DeviceListener:onSetDayRefreshRate(day)
+    UIManager:setRefreshRate(day, nil)
+end
+
+function DeviceListener:onSetNightRefreshRate(night)
+    UIManager:setRefreshRate(nil, night)
+end
+
+function DeviceListener:onSetFlashOnChapterBoundaries(toggle)
+    if toggle == true then
+        _setSetting("refresh_on_chapter_boundaries")
+    else
+        _unsetSetting("refresh_on_chapter_boundaries")
+    end
+end
+
+function DeviceListener:onToggleFlashOnChapterBoundaries()
+    _toggleSetting("refresh_on_chapter_boundaries")
+end
+
+function DeviceListener:onSetNoFlashOnSecondChapterPage(toggle)
+    if toggle == true then
+        _setSetting("no_refresh_on_second_chapter_page")
+    else
+        _unsetSetting("no_refresh_on_second_chapter_page")
+    end
+end
+
+function DeviceListener:onToggleNoFlashOnSecondChapterPage()
+    _toggleSetting("no_refresh_on_second_chapter_page")
 end
 
 if Device:canReboot() then

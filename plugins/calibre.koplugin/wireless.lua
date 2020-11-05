@@ -6,6 +6,7 @@
 local BD = require("ui/bidi")
 local CalibreMetadata = require("metadata")
 local ConfirmBox = require("ui/widget/confirmbox")
+local FFIUtil = require("ffi/util")
 local InputContainer = require("ui/widget/container/inputcontainer")
 local InputDialog = require("ui/widget/inputdialog")
 local InfoMessage = require("ui/widget/infomessage")
@@ -13,11 +14,10 @@ local NetworkMgr = require("ui/network/manager")
 local UIManager = require("ui/uimanager")
 local logger = require("logger")
 local rapidjson = require("rapidjson")
-local sleep = require("ffi/util").sleep
 local sha = require("ffi/sha2")
 local util = require("util")
 local _ = require("gettext")
-local T = require("ffi/util").template
+local T = FFIUtil.template
 
 require("ffi/zeromq_h")
 
@@ -177,6 +177,7 @@ function CalibreWireless:setInboxDir(host, port)
                 logger.info("set inbox directory", inbox)
                 G_reader_settings:saveSetting("inbox_dir", inbox)
                 if host and port then
+                    CalibreMetadata:init(inbox)
                     calibre_device:initCalibreMQ(host, port)
                 end
             end
@@ -203,6 +204,10 @@ Do you want to continue? ]]), driver),
 end
 
 function CalibreWireless:connect()
+    if NetworkMgr:willRerunWhenConnected(function() self:connect() end) then
+        return
+    end
+
     self.connect_message = false
     local host, port
     if G_reader_settings:hasNot("calibre_wireless_url") then
@@ -231,8 +236,6 @@ function CalibreWireless:connect()
         else
             self:setInboxDir(host, port)
         end
-    elseif not NetworkMgr:isConnected() then
-        NetworkMgr:promptWifiOn()
     else
         logger.info("cannot connect to calibre server")
         UIManager:show(InfoMessage:new{
@@ -254,9 +257,9 @@ end
 
 function CalibreWireless:reconnect()
     -- to use when something went wrong and we aren't in sync with calibre
-    sleep(1)
+    FFIUtil.sleep(1)
     self:disconnect()
-    sleep(1)
+    FFIUtil.sleep(1)
     self:connect()
 end
 

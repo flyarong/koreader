@@ -126,12 +126,14 @@ local Input = {
 
     timer_callbacks = {},
     disable_double_tap = true,
+    tap_interval_override = nil,
 
     -- keyboard state:
     modifiers = {
         Alt = false,
         Ctrl = false,
         Shift = false,
+        Sym = false,
     },
 
     -- repeat state:
@@ -349,19 +351,6 @@ function Input:handleKeyBoardEv(ev)
         elseif ev.value == EVENT_VALUE_KEY_RELEASE then
             return "PowerRelease"
         end
-    end
-
-    local FileChooser = self.file_chooser
-    if FileChooser and self:isEvKeyPress(ev)
-    and self.modifiers["Ctrl"] and keycode == "O" then
-        logger.dbg("Opening FileChooser:", FileChooser.type)
-        local file_path = FileChooser:open()
-
-        if file_path then
-            local ReaderUI = require("apps/reader/readerui")
-            ReaderUI:doShowReader(file_path)
-        end
-        return
     end
 
     -- quit on Alt + F4

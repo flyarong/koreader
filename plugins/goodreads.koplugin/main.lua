@@ -87,9 +87,8 @@ function Goodreads:updateSettings()
 How to generate a key and a secret key:
 
 1. Go to https://www.goodreads.com/user/sign_up and create an account
-2. Register for a development key on the following page: https://www.goodreads.com/user/sign_in?rd=true
-3. Your key and secret key will now be available on https://www.goodreads.com/api/key
-4. Enter your generated key and your secret key in the settings dialog (Login to Goodreads window)
+2. Create a key and secret key on https://www.goodreads.com/api/keys
+3. Enter your generated key and your secret key in the settings dialog (Login to Goodreads window)
 ]])
 
     if self.goodreads_key == "" then
@@ -170,16 +169,16 @@ end
 -- search_type = author - serch book by author
 -- search_type = title - search book by title
 function Goodreads:search(search_type)
+    if NetworkMgr:willRerunWhenOnline(function() self:search(search_type) end) then
+       return
+    end
+
     local title_header
     local hint
     local search_input
     local text_input
     local info
     local result
-    if not NetworkMgr:isOnline() then
-        NetworkMgr:promptWifiOn()
-        return
-    end
     if search_type == "all" then
         title_header = _("Search all books in Goodreads")
         hint = _("Title, author or ISBN")

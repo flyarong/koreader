@@ -250,15 +250,16 @@ pbupdate: all
 	file $(INSTALL_DIR)/koreader/luajit | grep ARM || exit 1
 	# remove old package if any
 	rm -f $(PB_PACKAGE)
-	# Pocketbook launching script
+	# Pocketbook launching scripts
 	mkdir -p $(INSTALL_DIR)/applications
 	mkdir -p $(INSTALL_DIR)/system/bin
-	mkdir -p $(INSTALL_DIR)/system/config
-
 	cp $(POCKETBOOK_DIR)/koreader.app $(INSTALL_DIR)/applications
-	cp $(POCKETBOOK_DIR)/koreader.app $(INSTALL_DIR)/system/bin
-	cp $(POCKETBOOK_DIR)/extensions.cfg $(INSTALL_DIR)/system/config
+	cp $(POCKETBOOK_DIR)/system_koreader.app $(INSTALL_DIR)/system/bin/koreader.app
+	cp $(COMMON_DIR)/spinning_zsync $(INSTALL_DIR)/koreader
 	cp -rfL $(INSTALL_DIR)/koreader $(INSTALL_DIR)/applications
+	find $(INSTALL_DIR)/applications/koreader \
+		-type f \( -name "*.gif" -o -name "*.html" -o -name "*.md" -o -name "*.txt" \) \
+		-exec rm -vf {} \;
 	# create new package
 	cd $(INSTALL_DIR) && \
 		zip -9 -r \
@@ -355,14 +356,16 @@ androidupdate: all
 	-rm $(INSTALL_DIR)/koreader/libs/libluajit.so
 
 	# assets are compressed manually and stored inside the APK.
-	cd $(INSTALL_DIR)/koreader && zip -r9 \
+	cd $(INSTALL_DIR)/koreader && 7z a -l -mx=9 -mfb=256 -mmt=on \
 		../../$(ANDROID_LAUNCHER_DIR)/assets/module/koreader-$(VERSION).zip * \
-		--exclude=*resources/fonts* \
-		--exclude=*resources/icons/src* \
-		--exclude=*share/man* \
-		--exclude=*spec* \
-		--exclude=*COPYING* \
-		--exclude=*README.md*
+		-xr!*resources/fonts* \
+		-xr!*resources/icons/src* \
+		-xr!*share/man* \
+		-xr!*spec$ \
+		-xr!*COPYING$ \
+		-xr!*README.md$ \
+		-xr!git$ \
+		-xr!gitiginore$ 
 
 	# make the android APK
 	$(MAKE) -C $(ANDROID_LAUNCHER_DIR) $(if $(KODEBUG), debug, release) \
@@ -405,9 +408,11 @@ macosupdate: all
 		$(INSTALL_DIR)/bundle/Contents/MacOS \
 		$(INSTALL_DIR)/bundle/Contents/Resources
 
-	cp $(MACOS_DIR)/koreader.sh $(INSTALL_DIR)/bundle/Contents/MacOS/koreader
 	cp resources/koreader.icns $(INSTALL_DIR)/bundle/Contents/Resources/icon.icns
-	cp -LR $(INSTALL_DIR)/koreader $(INSTALL_DIR)/bundle/Contents/Resources
+	cp -LR $(INSTALL_DIR)/koreader $(INSTALL_DIR)/bundle/Contents
+	cp -pRv $(MACOS_DIR)/menu.xml $(INSTALL_DIR)/bundle/Contents/MainMenu.xib
+	ibtool --compile "$(INSTALL_DIR)/bundle/Contents/Resources/Base.lproj/MainMenu.nib" "$(INSTALL_DIR)/bundle/Contents/MainMenu.xib"
+	rm -rfv "$(INSTALL_DIR)/bundle/Contents/MainMenu.xib"
 
 REMARKABLE_PACKAGE:=koreader-remarkable$(KODEDUG_SUFFIX)-$(VERSION).zip
 REMARKABLE_PACKAGE_OTA:=koreader-remarkable$(KODEDUG_SUFFIX)-$(VERSION).targz

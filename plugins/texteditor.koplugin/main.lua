@@ -1,7 +1,9 @@
 local BD = require("ui/bidi")
 local ConfirmBox = require("ui/widget/confirmbox")
 local DataStorage = require("datastorage")
+local Dispatcher = require("dispatcher")
 local Font = require("ui/font")
+local QRMessage = require("ui/widget/qrmessage")
 local InfoMessage = require("ui/widget/infomessage")
 local InputDialog = require("ui/widget/inputdialog")
 local LuaSettings = require("luasettings")
@@ -29,7 +31,12 @@ local TextEditor = WidgetContainer:new{
     min_file_size_warn = 200000, -- warn/ask when opening files bigger than this
 }
 
+function TextEditor:onDispatcherRegisterActions()
+    Dispatcher:registerAction("edit_last_edited_file", { category = "none", event = "OpenLastEditedFile", title = _("Texteditor: open last file"), device = true, separator = true, })
+end
+
 function TextEditor:init()
+    self:onDispatcherRegisterActions()
     self.ui.menu:registerToMainMenu(self)
 end
 
@@ -57,6 +64,7 @@ function TextEditor:loadSettings()
     end
     self.auto_para_direction = self.settings:readSetting("auto_para_direction") or true
     self.force_ltr_para_direction = self.settings:readSetting("force_ltr_para_direction") or false
+    self.qr_code_export = self.settings:readSetting("qr_code_export") or true
 end
 
 function TextEditor:onFlushSettings()
@@ -68,6 +76,7 @@ function TextEditor:onFlushSettings()
         self.settings:saveSetting("font_size", self.font_size)
         self.settings:saveSetting("auto_para_direction", self.auto_para_direction)
         self.settings:saveSetting("force_ltr_para_direction", self.force_ltr_para_direction)
+        self.settings:saveSetting("qr_code_export", self.qr_code_export)
         self.settings:flush()
     end
 end
@@ -144,6 +153,17 @@ Enable this if you are mostly editing code, HTML, CSS…]]),
                     end,
                     callback = function()
                         self.force_ltr_para_direction = not self.force_ltr_para_direction
+                    end,
+                },
+                {
+                    text = _("Enable QR code export"),
+                    help_text = _([[
+Export text to QR code, that can be scanned, for example, by a phone.]]),
+                    checked_func = function()
+                        return self.qr_code_export
+                    end,
+                    callback = function()
+                        self.qr_code_export = not self.qr_code_export
                     end,
                 },
             },
@@ -329,6 +349,7 @@ function TextEditor:chooseFile()
 end
 
 function TextEditor:checkEditFile(file_path, from_history, possibly_new_file)
+    self:loadSettings()
     local attr = lfs.attributes(file_path)
     if not possibly_new_file and not attr then
         UIManager:show(ConfirmBox:new{
@@ -440,6 +461,37 @@ function TextEditor:editFile(file_path, readonly)
     if self.force_ltr_para_direction then
         para_direction_rtl = false -- force LTR
     end
+    local buttons_first_row = {}  -- First button on first row, that will be filled with Reset|Save|Close
+    if is_lua then
+        table.insert(buttons_first_row, {
+            text = _("Check Lua"),
+            callback = function()
+                local parse_error = util.checkLuaSyntax(input:getInputText())
+                if parse_error then
+                    UIManager:show(InfoMessage:new{
+                        text = T(_("Lua syntax check failed:\n\n%1"), parse_error)
+                    })
+                else
+                    UIManager:show(Notification:new{
+                        text = T(_("Lua syntax OK")),
+                        timeout = 2,
+                    })
+                end
+            end,
+        })
+    end
+    if self.qr_code_export then
+        table.insert(buttons_first_row, {
+            text = _("QR"),
+            callback = function()
+                UIManager:show(QRMessage:new{
+                    text = input:getInputText(),
+                    height = Screen:getHeight(),
+                    width = Screen:getWidth()
+                })
+            end,
+        })
+    end
     input = InputDialog:new{
         title =  filename,
         input = self:readFileContent(file_path),
@@ -453,25 +505,7 @@ function TextEditor:editFile(file_path, readonly)
         readonly = readonly,
         add_nav_bar = true,
         scroll_by_pan = true,
-        buttons = is_lua and {{
-            -- First button on first row, that will be filled with Reset|Save|Close
-            {
-                text = _("Check Lua"),
-                callback = function()
-                    local parse_error = util.checkLuaSyntax(input:getInputText())
-                    if parse_error then
-                        UIManager:show(InfoMessage:new{
-                            text = T(_("Lua syntax check failed:\n\n%1"), parse_error)
-                        })
-                    else
-                        UIManager:show(Notification:new{
-                            text = T(_("Lua syntax OK")),
-                            timeout = 2,
-                        })
-                    end
-                end,
-            },
-        }},
+        buttons = {buttons_first_row},
         -- Set/save view and cursor position callback
         view_pos_callback = function(top_line_num, charpos)
             -- This same callback is called with no argument to get initial position,
@@ -572,6 +606,17 @@ Do you want to keep this file as empty, or do you prefer to delete it?
     -- But it's easier to just let InputDialog and InputText do their
     -- own readonly prevention (and on devices where we run as root, we
     -- will hardly ever be readonly).
+end
+
+-- reopen last edited file. Invokeable with gesture:
+function TextEditor:onOpenLastEditedFile()
+    self:loadSettings()
+    if #self.history > 0 then
+        local file_path = self.history[1]
+        self:checkEditFile(file_path, true)
+    else
+        self:chooseFile()
+    end
 end
 
 return TextEditor

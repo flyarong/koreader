@@ -30,7 +30,6 @@ local ReaderCropping = require("apps/reader/modules/readercropping")
 local ReaderDeviceStatus = require("apps/reader/modules/readerdevicestatus")
 local ReaderDictionary = require("apps/reader/modules/readerdictionary")
 local ReaderFont = require("apps/reader/modules/readerfont")
-local ReaderGesture = require("apps/reader/modules/readergesture")
 local ReaderGoto = require("apps/reader/modules/readergoto")
 local ReaderHinting = require("apps/reader/modules/readerhinting")
 local ReaderHighlight = require("apps/reader/modules/readerhighlight")
@@ -54,12 +53,13 @@ local ReaderZooming = require("apps/reader/modules/readerzooming")
 local Screenshoter = require("ui/widget/screenshoter")
 local SettingsMigration = require("ui/data/settings_migration")
 local UIManager = require("ui/uimanager")
+local ffiUtil  = require("ffi/util")
 local lfs = require("libs/libkoreader-lfs")
 local logger = require("logger")
 local util = require("util")
 local _ = require("gettext")
 local Screen = require("device").screen
-local T = require("ffi/util").template
+local T = ffiUtil.template
 
 local ReaderUI = InputContainer:new{
     name = "ReaderUI",
@@ -271,15 +271,22 @@ function ReaderUI:init()
         end
         -- make sure we render document first before calling any callback
         self:registerPostInitCallback(function()
+            local start_ts = ffiUtil.getTimestamp()
             if not self.document:loadDocument() then
                 self:dealWithLoadDocumentFailure()
             end
+            logger.dbg(string.format("  loading took %.3f seconds", ffiUtil.getDuration(start_ts)))
 
             -- used to read additional settings after the document has been
             -- loaded (but not rendered yet)
             self:handleEvent(Event:new("PreRenderDocument", self.doc_settings))
 
+            start_ts = ffiUtil.getTimestamp()
             self.document:render()
+            logger.dbg(string.format("  rendering took %.3f seconds", ffiUtil.getDuration(start_ts)))
+
+            -- Uncomment to output the built DOM (for debugging)
+            -- logger.dbg(self.document:getHTMLFromXPointer(".0", 0x6830))
         end)
         -- styletweak controller (must be before typeset controller)
         self:registerModule("styletweak", ReaderStyleTweak:new{
@@ -384,14 +391,6 @@ function ReaderUI:init()
             logger.info("RD loaded plugin", plugin_module.name,
                         "at", plugin_module.path)
         end
-    end
-    if Device:isTouchDevice() then
-        -- gesture manager
-        self:registerModule("gesture", ReaderGesture:new {
-            document = self.document,
-            view = self.view,
-            ui = self,
-        })
     end
 
     if Device:hasWifiToggle() then
@@ -584,6 +583,7 @@ function ReaderUI:doShowReader(file, provider)
         local _, filename = util.splitFilePathName(file)
         Screen:setWindowTitle(filename)
     end
+    Device:notifyBookState(title, document)
 
     UIManager:show(reader)
     _running_instance = reader
@@ -693,6 +693,7 @@ end
 
 function ReaderUI:onClose(full_refresh)
     logger.dbg("closing reader")
+    Device:notifyBookState(nil, nil)
     if full_refresh == nil then
         full_refresh = true
     end
