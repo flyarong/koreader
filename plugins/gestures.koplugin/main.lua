@@ -118,8 +118,8 @@ function Gestures:init()
     if not lfs.attributes(gestures_path, "mode") then
         FFIUtil.copyFile(defaults_path, gestures_path)
     end
-    self.ignore_hold_corners = G_reader_settings:readSetting("ignore_hold_corners")
-    self.multiswipes_enabled = G_reader_settings:readSetting("multiswipes_enabled")
+    self.ignore_hold_corners = G_reader_settings:isTrue("ignore_hold_corners")
+    self.multiswipes_enabled = G_reader_settings:isTrue("multiswipes_enabled")
     self.is_docless = self.ui == nil or self.ui.document == nil
     self.ges_mode = self.is_docless and "gesture_fm" or "gesture_reader"
     self.defaults = LuaSettings:open(defaults_path).data[self.ges_mode]
@@ -231,7 +231,8 @@ function Gestures:genMenu(ges)
 end
 
 function Gestures:genSubItem(ges, separator, hold_callback)
-    local reader_only = {tap_top_left_corner=true, hold_top_left_corner=true}
+    local reader_only = {tap_top_left_corner=true, hold_top_left_corner=true,
+                         tap_top_right_corner=true,}
     local enabled_func
     if reader_only[ges] then
        enabled_func = function() return self.ges_mode == "gesture_reader" end
@@ -681,7 +682,7 @@ function Gestures:addToMainMenu(menu_items)
                 text = _("Turn on multiswipes"),
                 checked_func = function() return self.multiswipes_enabled end,
                 callback = function()
-                    G_reader_settings:saveSetting("multiswipes_enabled", not self.multiswipes_enabled)
+                    G_reader_settings:toggle("multiswipes_enabled")
                     self.multiswipes_enabled = G_reader_settings:isTrue("multiswipes_enabled")
                 end,
                 help_text = multiswipes_info_text,
@@ -823,18 +824,22 @@ function Gestures:setupGesture(ges)
     local overrides_swipe_pan, overrides_swipe_pan_release
     if self.is_docless then
         overrides_tap_corner = {
+            "filemanager_ext_tap",
             "filemanager_tap",
         }
         overrides_horizontal_edge = {
+            "filemanager_ext_swipe",
             "filemanager_swipe",
         }
     else
         overrides_tap_corner = {
-            "tap_backward",
-            "tap_forward",
-            "readermenu_tap",
-            "readerconfigmenu_tap",
             "readerfooter_tap",
+            "readerconfigmenu_ext_tap",
+            "readerconfigmenu_tap",
+            "readermenu_ext_tap",
+            "readermenu_tap",
+            "tap_forward",
+            "tap_backward",
         }
         overrides_hold_corner = {
             -- As hold corners are "ignored" by default, and we have
@@ -844,17 +849,21 @@ function Gestures:setupGesture(ges)
             "readerfooter_hold",
         }
         overrides_vertical_edge = {
+            "readerconfigmenu_ext_swipe",
+            "readerconfigmenu_swipe",
+            "readermenu_ext_swipe",
+            "readermenu_swipe",
             "paging_swipe",
             "rolling_swipe",
-            "readermenu_swipe",
-            "readerconfigmenu_swipe",
         }
         overrides_horizontal_edge = {
             "swipe_link",
+            "readerconfigmenu_ext_swipe",
+            "readerconfigmenu_swipe",
+            "readermenu_ext_swipe",
+            "readermenu_swipe",
             "paging_swipe",
             "rolling_swipe",
-            "readermenu_swipe",
-            "readerconfigmenu_swipe",
         }
         overrides_pan = {
             "paging_swipe",
@@ -1034,13 +1043,15 @@ function Gestures:setupGesture(ges)
         distance = "short"
         if self.is_docless then
             overrides = {
+                "filemanager_ext_tap",
                 "filemanager_tap",
-                "filemanager_swipe"
+                "filemanager_ext_swipe",
+                "filemanager_swipe",
             }
         else
             overrides = {
-                "rolling_swipe",
                 "paging_swipe",
+                "rolling_swipe",
             }
         end
     elseif ges == "spread_gesture" then
@@ -1107,12 +1118,12 @@ function Gestures:multiswipeAction(multiswipe_directions, ges)
             text = _("You have just performed your first multiswipe gesture.") .."\n\n".. multiswipes_info_text,
             ok_text = _("Turn on"),
             ok_callback = function()
-                G_reader_settings:saveSetting("multiswipes_enabled", true)
+                G_reader_settings:makeTrue("multiswipes_enabled")
                 self.multiswipes_enabled = true
             end,
             cancel_text = _("Turn off"),
             cancel_callback = function()
-                G_reader_settings:saveSetting("multiswipes_enabled", false)
+                G_reader_settings:makeFalse("multiswipes_enabled")
                 self.multiswipes_enabled = false
             end,
         })

@@ -1,8 +1,8 @@
 local Device = require("device")
 local Screen = Device.screen
-local S = require("ui/data/strings")
 local optionsutil = require("ui/data/optionsutil")
 local _ = require("gettext")
+local C_ = _.pgettext
 
 -- Get font size numbers as a table of strings
 local tableOfNumbersToTableOfStrings = function(numbers)
@@ -17,55 +17,92 @@ end
 local CreOptions = {
     prefix = 'copt',
     {
-        icon = "resources/icons/appbar.transform.rotate.right.large.png",
+        icon = "appbar.rotation",
         options = {
             {
                 name = "rotation_mode",
-                name_text = S.SCREEN_MODE,
-                toggle = {S.LANDSCAPE_ROTATED, S.PORTRAIT, S.LANDSCAPE, S.PORTRAIT_ROTATED},
+                name_text = _("Rotation"),
+                item_icons_func = function()
+                    if Screen:getRotationMode() == Screen.ORIENTATION_PORTRAIT then
+                        -- P, 0UR
+                        return {
+                            "rotation.P.90CCW",
+                            "rotation.P.0UR",
+                            "rotation.P.90CW",
+                            "rotation.P.180UD",
+                        }
+                    elseif Screen:getRotationMode() == Screen.ORIENTATION_PORTRAIT_ROTATED then
+                        -- P, 180UD
+                        return {
+                            "rotation.P.90CW",
+                            "rotation.P.180UD",
+                            "rotation.P.90CCW",
+                            "rotation.P.0UR",
+                        }
+                    elseif Screen:getRotationMode() == Screen.ORIENTATION_LANDSCAPE then
+                        -- L, 90CW
+                        return {
+                            "rotation.L.90CCW",
+                            "rotation.L.0UR",
+                            "rotation.L.90CW",
+                            "rotation.L.180UD",
+                        }
+                    else
+                        -- L, 90CCW
+                        return {
+                            "rotation.L.90CW",
+                            "rotation.L.180UD",
+                            "rotation.L.90CCW",
+                            "rotation.L.0UR",
+                        }
+                    end
+                end,
+                -- For Dispatcher & onMakeDefault's sake
+                labels = {C_("Rotation", "⤹ 90°"), C_("Rotation", "↑ 0°"), C_("Rotation", "⤸ 90°"), C_("Rotation", "↓ 180°")},
                 alternate = false,
                 values = {Screen.ORIENTATION_LANDSCAPE_ROTATED, Screen.ORIENTATION_PORTRAIT, Screen.ORIENTATION_LANDSCAPE, Screen.ORIENTATION_PORTRAIT_ROTATED},
                 args = {Screen.ORIENTATION_LANDSCAPE_ROTATED, Screen.ORIENTATION_PORTRAIT, Screen.ORIENTATION_LANDSCAPE, Screen.ORIENTATION_PORTRAIT_ROTATED},
                 default_arg = 0,
-                current_func = function() return Device.screen:getRotationMode() end,
+                current_func = function() return Screen:getRotationMode() end,
                 event = "SetRotationMode",
                 name_text_hold_callback = optionsutil.showValues,
             },
             {
                 name = "visible_pages",
-                name_text = S.DUAL_PAGES,
-                toggle = {S.OFF, S.ON},
+                name_text = _("Two Columns"),
+                toggle = {_("off"), _("on")},
                 values = {1, 2},
                 default_value = 1,
                 args = {1, 2},
                 default_arg = 1,
                 event = "SetVisiblePages",
+                --[[ Commented out, to have it also available in portrait mode
                 current_func = function()
                     -- If not in landscape mode, shows "1" as selected
-                    if Device.screen:getScreenMode() ~= "landscape" then
+                    if Screen:getScreenMode() ~= "landscape" then
                         return 1
                     end
                     -- if we return nil, ConfigDialog will pick the one from the
                     -- configurable as if we hadn't provided this 'current_func'
                 end,
+                ]]--
                 enabled_func = function(configurable)
-                    return Device.screen:getScreenMode() == "landscape" and
-                        optionsutil.enableIfEquals(configurable, "view_mode", 0) -- "page"
+                    return optionsutil.enableIfEquals(configurable, "view_mode", 0) -- "page" mode
+                        -- and Screen:getScreenMode() == "landscape"
                 end,
                 name_text_hold_callback = optionsutil.showValues,
-                help_text = _([[In landscape mode, you can choose to display one or two pages of the book on the screen.
-Note that this may not be ensured under some conditions: in scroll mode, when a very big font size is used, or on devices with a very low aspect ratio.]]),
+                help_text = _([[Render the document on half the screen width and display two pages at once with a single page number. This makes it look like two columns.
+This is disabled in scroll mode. Switching from page mode with two columns to scroll mode will cause the document to be re-rendered.]]),
             },
         }
     },
     {
-        icon = "resources/icons/appbar.crop.large.png",
+        icon = "appbar.crop",
         options = {
             {
                 name = "h_page_margins",
-                name_text = S.H_PAGE_MARGINS,
+                name_text = _("L/R Margins"),
                 buttonprogress = true,
-                fine_tune = true,
                 values = {
                     DCREREADER_CONFIG_H_MARGIN_SIZES_SMALL,
                     DCREREADER_CONFIG_H_MARGIN_SIZES_MEDIUM,
@@ -91,19 +128,31 @@ Note that this may not be ensured under some conditions: in scroll mode, when a 
                     DCREREADER_CONFIG_H_MARGIN_SIZES_X_HUGE,
                     DCREREADER_CONFIG_H_MARGIN_SIZES_XX_HUGE,
                 },
-                delay_repaint = true,
+                hide_on_apply = true,
                 name_text_hold_callback = optionsutil.showValuesHMargins,
+                more_options = true,
+                more_options_param = {
+                    name_text = _("Left/Right Margins"),
+                    left_min = 0,
+                    left_max = 140,
+                    left_step = 1,
+                    left_hold_step = 5,
+                    right_min = 0,
+                    right_max = 140,
+                    right_step = 1,
+                    right_hold_step = 5,
+                },
             },
             {
                 name = "sync_t_b_page_margins",
-                name_text = S.SYNC_T_B_PAGE_MARGINS,
-                toggle = {S.OFF, S.ON},
+                name_text = _("Sync T/B Margins"),
+                toggle = {_("off"), _("on")},
                 values = {0, 1},
                 default_value = 0,
                 event = "SyncPageTopBottomMargins",
                 args = {false, true},
                 default_arg = false,
-                delay_repaint = true,
+                hide_on_apply = true,
                 name_text_hold_callback = optionsutil.showValues,
                 help_text = _([[Keep top and bottom margins synchronized.
 - 'off' allows different top and bottom margins.
@@ -113,9 +162,8 @@ In the top menu → Settings → Status bar, you can choose whether the bottom m
             },
             {
                 name = "t_page_margin",
-                name_text = S.T_PAGE_MARGIN,
+                name_text = _("Top Margin"),
                 buttonprogress = true,
-                fine_tune = true,
                 values = {
                     DCREREADER_CONFIG_T_MARGIN_SIZES_SMALL,
                     DCREREADER_CONFIG_T_MARGIN_SIZES_MEDIUM,
@@ -141,14 +189,32 @@ In the top menu → Settings → Status bar, you can choose whether the bottom m
                     DCREREADER_CONFIG_T_MARGIN_SIZES_X_HUGE,
                     DCREREADER_CONFIG_T_MARGIN_SIZES_XX_HUGE,
                 },
-                delay_repaint = true,
+                hide_on_apply = true,
                 name_text_hold_callback = optionsutil.showValues,
+                more_options = true,
+                more_options_param = {
+                    -- Allow this to tune both top and bottom margins, handling
+                    -- 2 setting names (we'll get the exact same DoubleSpinWidget
+                    -- in the b_page_margin setting just below)
+                    name_text = _("Top/Bottom Margins"),
+                    names = { "t_page_margin", "b_page_margin" },
+                    event = "SetPageTopAndBottomMargin",
+                    left_text = _("Top"),
+                    left_min = 0,
+                    left_max = 140,
+                    left_step = 1,
+                    left_hold_step = 5,
+                    right_text = _("Bottom"),
+                    right_min = 0,
+                    right_max = 140,
+                    right_step = 1,
+                    right_hold_step = 5,
+                },
             },
             {
                 name = "b_page_margin",
-                name_text = S.B_PAGE_MARGIN,
+                name_text = _("Bottom Margin"),
                 buttonprogress = true,
-                fine_tune = true,
                 values = {
                     DCREREADER_CONFIG_B_MARGIN_SIZES_SMALL,
                     DCREREADER_CONFIG_B_MARGIN_SIZES_MEDIUM,
@@ -174,19 +240,36 @@ In the top menu → Settings → Status bar, you can choose whether the bottom m
                     DCREREADER_CONFIG_B_MARGIN_SIZES_X_HUGE,
                     DCREREADER_CONFIG_B_MARGIN_SIZES_XX_HUGE,
                 },
-                delay_repaint = true,
+                hide_on_apply = true,
                 name_text_hold_callback = optionsutil.showValues,
                 help_text = _([[In the top menu → Settings → Status bar, you can choose whether the bottom margin applies from the bottom of the screen, or from above the status bar.]]),
+                more_options = true,
+                more_options_param = {
+                    -- Similar as for t_page_margin above
+                    name_text = _("Top/Bottom Margins"),
+                    names = { "t_page_margin", "b_page_margin" },
+                    event = "SetPageTopAndBottomMargin",
+                    left_text = _("Top"),
+                    left_min = 0,
+                    left_max = 140,
+                    left_step = 1,
+                    left_hold_step = 5,
+                    right_text = _("Bottom"),
+                    right_min = 0,
+                    right_max = 140,
+                    right_step = 1,
+                    right_hold_step = 5,
+                },
             },
         }
     },
     {
-        icon = "resources/icons/appbar.column.two.large.png",
+        icon = "appbar.pageview",
         options = {
             {
                 name = "view_mode",
-                name_text = S.VIEW_MODE,
-                toggle = {S.VIEW_PAGE, S.VIEW_SCROLL},
+                name_text = _("View Mode"),
+                toggle = {_("page"), _("continuous")},
                 values = {0, 1},
                 default_value = 0,
                 args = {"page", "scroll"},
@@ -198,8 +281,8 @@ In the top menu → Settings → Status bar, you can choose whether the bottom m
             },
             {
                 name = "block_rendering_mode",
-                name_text = S.BLOCK_RENDERING_MODE,
-                toggle = {S.LEGACY, S.FLAT, S.BOOK, S.WEB},
+                name_text = _("Render Mode"),
+                toggle = {_("legacy"), _("flat"), _("book"), _("web")},
                 values = {0, 1, 2, 3},
                 default_value = 2,
                 args = {0, 1, 2, 3},
@@ -214,12 +297,12 @@ In the top menu → Settings → Status bar, you can choose whether the bottom m
             },
             {
                 name = "render_dpi",
-                name_text = S.ZOOM_DPI,
+                name_text = _("Zoom (dpi)"),
                 more_options = true,
                 more_options_param = {
                     value_hold_step = 20,
                 },
-                toggle = {S.OFF, "48", "96¹’¹", "167", "212", "300"},
+                toggle = {_("off"), "48", "96¹’¹", "167", "212", "300"},
                 values = {0, 48, 96, 167, 212, 300},
                 default_value = 96,
                 args = {0, 48, 96, 167, 212, 300},
@@ -234,7 +317,7 @@ Note that your selected font size is not affected by this setting.]]),
             },
             {
                 name = "line_spacing",
-                name_text = S.LINE_SPACING,
+                name_text = _("Line Spacing"),
                 buttonprogress = true,
                 values = {
                     DCREREADER_CONFIG_LINE_SPACE_PERCENT_X_TINY,
@@ -286,10 +369,11 @@ Note that your selected font size is not affected by this setting.]]),
         }
     },
     {
-        icon = "resources/icons/appbar.text.size.large.png",
+        icon = "appbar.textsize",
         options = {
             {
                 name = "font_size",
+                alt_name_text = _("Font size"),
                 item_text = tableOfNumbersToTableOfStrings(DCREREADER_CONFIG_FONT_SIZES),
                 item_align_center = 1.0,
                 spacing = 15,
@@ -301,9 +385,9 @@ Note that your selected font size is not affected by this setting.]]),
             },
             {
                 name = "font_fine_tune",
-                name_text = S.FONT_SIZE,
-                toggle = Device:isTouchDevice() and {S.DECREASE, S.INCREASE} or nil,
-                item_text = not Device:isTouchDevice() and {S.DECREASE, S.INCREASE} or nil,
+                name_text = _("Font Size"),
+                toggle = Device:isTouchDevice() and {_("decrease"), _("increase")} or nil,
+                item_text = not Device:isTouchDevice() and {_("decrease"), _("increase")} or nil,
                 more_options = true,
                 more_options_param = {
                     value_min = 12,
@@ -329,7 +413,7 @@ Note that your selected font size is not affected by this setting.]]),
             },
             {
                 name = "word_spacing",
-                name_text = S.WORD_SPACING,
+                name_text = _("Word Spacing"),
                 more_options = true,
                 more_options_param = {
                     name = "word_spacing",
@@ -349,7 +433,7 @@ Note that your selected font size is not affected by this setting.]]),
                     right_hold_step = 10,
                     event = "SetWordSpacing",
                 },
-                toggle = {S.SMALL, S.MEDIUM, S.LARGE},
+                toggle = {_("small"), _("medium"), _("large")},
                 values = {
                     DCREREADER_CONFIG_WORD_SPACING_SMALL,
                     DCREREADER_CONFIG_WORD_SPACING_MEDIUM,
@@ -371,7 +455,7 @@ Note that your selected font size is not affected by this setting.]]),
             },
             {
                 name = "word_expansion",
-                name_text = S.WORD_EXPANSION,
+                name_text = _("Word Expansion"),
                 more_options = true,
                 more_options_param = {
                     value_min = 0,
@@ -383,7 +467,7 @@ Note that your selected font size is not affected by this setting.]]),
                     info_text = _([[Set max word expansion as a % of the font size.]]),
                     event = "SetWordExpansion",
                 },
-                toggle = {S.NONE, S.SOME, S.MORE},
+                toggle = {_("none"), _("some"), _("more")},
                 values = {
                     DCREREADER_CONFIG_WORD_EXPANSION_NONE,
                     DCREREADER_CONFIG_WORD_EXPANSION_SOME,
@@ -406,12 +490,12 @@ Note that your selected font size is not affected by this setting.]]),
         }
     },
     {
-        icon = "resources/icons/appbar.grade.b.large.png",
+        icon = "appbar.contrast",
         options = {
             {
                 name = "font_weight",
-                name_text = S.FONT_WEIGHT,
-                toggle = {S.REGULAR, S.BOLD},
+                name_text = _("Font Weight"),
+                toggle = {_("regular"), _("bold")},
                 values = {0, 1},
                 default_value = 0,
                 args = {0, 1},
@@ -420,7 +504,7 @@ Note that your selected font size is not affected by this setting.]]),
             },
             {
                 name = "font_gamma",
-                name_text = S.CONTRAST,
+                name_text = _("Contrast"),
                 buttonprogress = true,
                 default_value = 15, -- gamma = 1.0
                 default_pos = 2,
@@ -446,8 +530,8 @@ Note that your selected font size is not affected by this setting.]]),
             },
             {
                 name = "font_hinting",
-                name_text = S.FONT_HINT,
-                toggle = {S.OFF, S.NATIVE, S.AUTO},
+                name_text = _("Font Hinting"),
+                toggle = {_("off"), _("native"), _("auto")},
                 values = {0, 1, 2},
                 default_value = 2,
                 args = {0, 1, 2},
@@ -461,8 +545,8 @@ Note that your selected font size is not affected by this setting.]]),
             },
             {
                 name = "font_kerning",
-                name_text = S.FONT_KERNING,
-                toggle = {S.OFF, S.FAST, S.GOOD, S.BEST},
+                name_text = _("Font Kerning"),
+                toggle = {_("off"), _("fast"), _("good"), _("best")},
                 values = {0, 1, 2, 3},
                 default_value = 3,
                 args = {0, 1, 2, 3},
@@ -480,26 +564,26 @@ Note that your selected font size is not affected by this setting.]]),
         }
     },
     {
-        icon = "resources/icons/appbar.settings.large.png",
+        icon = "appbar.settings",
         options = {
             {
                 name = "status_line",
-                name_text = S.ALT_STATUS_BAR,
-                toggle = {S.OFF, S.ON},
-                values = {1, 0},
-                default_value = 1, -- Note that 1 means KOReader (bottom) status bar only
+                name_text = _("Alt Status Bar"),
+                toggle = {_("off"), _("on")},
+                values = {1, 0}, -- Note that 0 means crengine header status line enabled, and 1 means disabled
+                default_value = 1,
                 args = {1, 0},
                 default_arg = 1,
                 event = "SetStatusLine",
                 name_text_hold_callback = optionsutil.showValues,
-                help_text = _([[Enable or disable the rendering engine alternative status bar at the top of the screen (this status bar can't be customized).
+                help_text = _([[Enable or disable the rendering engine alternative status bar at the top of the screen. The items displayed can be customized via the main menu.
 
-Whether enabled or disabled, KOReader's own status bar at the bottom of the screen can be toggled by tapping. The items displayed can be customized via the main menu.]]),
+Whether enabled or disabled, KOReader's own status bar at the bottom of the screen can be toggled by tapping.]]),
             },
             {
                 name = "embedded_css",
-                name_text = S.EMBEDDED_STYLE,
-                toggle = {S.OFF, S.ON},
+                name_text = _("Embedded Style"),
+                toggle = {_("off"), _("on")},
                 values = {0, 1},
                 default_value = 1,
                 args = {false, true},
@@ -511,8 +595,8 @@ Whether enabled or disabled, KOReader's own status bar at the bottom of the scre
             },
             {
                 name = "embedded_fonts",
-                name_text = S.EMBEDDED_FONTS,
-                toggle = {S.OFF, S.ON},
+                name_text = _("Embedded Fonts"),
+                toggle = {_("off"), _("on")},
                 values = {0, 1},
                 default_value = 1,
                 args = {false, true},
@@ -527,8 +611,8 @@ Whether enabled or disabled, KOReader's own status bar at the bottom of the scre
             },
             {
                 name = "smooth_scaling",
-                name_text = S.IMAGE_SCALING,
-                toggle = {S.FAST, S.BEST},
+                name_text = _("Image Scaling"),
+                toggle = {_("fast"), _("best")},
                 values = {0, 1},
                 default_value = 0,
                 args = {false, true},
@@ -540,14 +624,14 @@ Whether enabled or disabled, KOReader's own status bar at the bottom of the scre
             },
             {
                 name = "nightmode_images",
-                name_text = S.NIGHTMODE_IMAGES,
-                toggle = {S.ON, S.OFF},
+                name_text = _("Invert Images"),
+                toggle = {_("on"), _("off")},
                 values = {1, 0},
                 default_value = 1,
                 args = {true, false},
                 default_arg = nil,
                 event = "ToggleNightmodeImages",
-                show_func = function() return Device.screen.night_mode end,
+                show_func = function() return Screen.night_mode end,
                 name_text_hold_callback = optionsutil.showValues,
                 help_text = _([[Disable the automagic inversion of images when nightmode is enabled. Useful if your book contains mainly inlined mathematical content or scene break art.]]),
             },

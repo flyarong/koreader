@@ -18,19 +18,68 @@ fi
 
 # Attempt to switch to a sensible CPUFreq governor when that's not already the case...
 IFS= read -r current_cpufreq_gov <"/sys/devices/system/cpu/cpu0/cpufreq/scaling_governor"
-# NOTE: We're being fairly conservative here, because what's used and what's available varies depending on HW...
-if [ "${current_cpufreq_gov}" != "ondemand" ] && [ "${current_cpufreq_gov}" != "interactive" ]; then
-    # NOTE: Go with ondemand, because it's likely to be the lowest common denominator.
-    #       Plus, interactive is hard to tune right, and only really interesting when it's a recent version,
-    #       which I somehow doubt is the case anywhere here...
-    if grep -q ondemand /sys/devices/system/cpu/cpu0/cpufreq/scaling_available_governors; then
+# NOTE: What's available depends on the HW, so, we'll have to take it step by step...
+#       Roughly follow Nickel's behavior (which prefers interactive), and prefer interactive, then ondemand, and finally conservative/dvfs.
+if [ "${current_cpufreq_gov}" != "interactive" ]; then
+    if grep -q "interactive" "/sys/devices/system/cpu/cpu0/cpufreq/scaling_available_governors"; then
         ORIG_CPUFREQ_GOV="${current_cpufreq_gov}"
-        echo "ondemand" >"/sys/devices/system/cpu/cpu0/cpufreq/scaling_governor"
+        echo "interactive" >"/sys/devices/system/cpu/cpu0/cpufreq/scaling_governor"
+    elif [ "${current_cpufreq_gov}" != "ondemand" ]; then
+        if grep -q "ondemand" "/sys/devices/system/cpu/cpu0/cpufreq/scaling_available_governors"; then
+            # NOTE: This should never really happen: every kernel that supports ondemand already supports interactive ;).
+            #       They were both introduced on Mk. 6
+            ORIG_CPUFREQ_GOV="${current_cpufreq_gov}"
+            echo "ondemand" >"/sys/devices/system/cpu/cpu0/cpufreq/scaling_governor"
+        elif [ -e "/sys/devices/platform/mxc_dvfs_core.0/enable" ]; then
+            # The rest of this block assumes userspace is available...
+            if grep -q "userspace" "/sys/devices/system/cpu/cpu0/cpufreq/scaling_available_governors"; then
+                ORIG_CPUFREQ_GOV="${current_cpufreq_gov}"
+                export CPUFREQ_DVFS="true"
+
+                # If we can use conservative, do so, but we'll tweak it a bit to make it somewhat useful given our load patterns...
+                # We unfortunately don't have any better choices on those kernels,
+                # the only other governors available are powersave & performance (c.f., #4114)...
+                if grep -q "conservative" "/sys/devices/system/cpu/cpu0/cpufreq/scaling_available_governors"; then
+                    export CPUFREQ_CONSERVATIVE="true"
+                    echo "conservative" >"/sys/devices/system/cpu/cpu0/cpufreq/scaling_governor"
+                    # NOTE: The knobs survive a governor switch, which is why we do this now ;).
+                    echo "2" >"/sys/devices/system/cpu/cpufreq/conservative/sampling_down_factor"
+                    echo "50" >"/sys/devices/system/cpu/cpufreq/conservative/freq_step"
+                    echo "11" >"/sys/devices/system/cpu/cpufreq/conservative/down_threshold"
+                    echo "12" >"/sys/devices/system/cpu/cpufreq/conservative/up_threshold"
+                    # NOTE: The default sampling_rate is a bit high for my tastes,
+                    #       but it unfortunately defaults to its lowest possible setting...
+                fi
+
+                # NOTE: Now, here comes the freaky stuff... On a H2O, DVFS is only enabled when Wi-Fi is *on*.
+                #       When it's off, DVFS is off, which pegs the CPU @ max clock given that DVFS means the userspace governor.
+                #       The flip may originally have been switched by the sdio_wifi_pwr module itself,
+                #       via ntx_wifi_power_ctrl @ arch/arm/mach-mx5/mx50_ntx_io.c (which is also the CM_WIFI_CTRL (208) ntx_io ioctl),
+                #       but the code in the published H2O kernel sources actually does the reverse, and is commented out ;).
+                #       It is now entirely handled by Nickel, right *before* loading/unloading that module.
+                #       (There's also a bug(?) where that behavior is inverted for the *first* Wi-Fi session after a cold boot...)
+                if grep -q "sdio_wifi_pwr" "/proc/modules"; then
+                    # Wi-Fi is enabled, make sure DVFS is on
+                    echo "userspace" >"/sys/devices/system/cpu/cpu0/cpufreq/scaling_governor"
+                    echo "1" >"/sys/devices/platform/mxc_dvfs_core.0/enable"
+                else
+                    # Wi-Fi is disabled, make sure DVFS is off
+                    echo "0" >"/sys/devices/platform/mxc_dvfs_core.0/enable"
+
+                    # Switch to conservative to avoid being stuck at max clock if we can...
+                    if [ -n "${CPUFREQ_CONSERVATIVE}" ]; then
+                        echo "conservative" >"/sys/devices/system/cpu/cpu0/cpufreq/scaling_governor"
+                    else
+                        # Otherwise, we'll be pegged at max clock...
+                        echo "userspace" >"/sys/devices/system/cpu/cpu0/cpufreq/scaling_governor"
+                        # The kernel should already be taking care of that...
+                        cat "/sys/devices/system/cpu/cpu0/cpufreq/scaling_max_freq" >"/sys/devices/system/cpu/cpu0/cpufreq/scaling_setspeed"
+                    fi
+                fi
+            fi
+        fi
     fi
 fi
-# NOTE: That doesn't actually help us poor userspace plebs, but, short of switching to performance,
-#       I don't really have a golden bullet here... (conservative's rubberbanding is terrible, so that's a hard pass).
-#       All I can say is that userspace is a terrible idea and behaves *very* strangely (c.f., #4114).
 
 # update to new version from OTA directory
 ko_update_check() {
@@ -51,6 +100,11 @@ ko_update_check() {
             mv "${NEWUPDATE}" "${INSTALLED}"
             ./fbink -q -y -6 -pm "Update successful :)"
             ./fbink -q -y -5 -pm "KOReader will start momentarily . . ."
+
+            # Warn if the startup script has been updated...
+            if [ "$(md5sum "/tmp/koreader.sh" | cut -f1 -d' ')" != "$(md5sum "${KOREADER_DIR}/koreader.sh" | cut -f1 -d' ')" ]; then
+                ./fbink -q -pmMh "Update contains a startup script update!"
+            fi
         else
             # Uh oh...
             ./fbink -q -y -6 -pmh "Update failed :("
@@ -142,13 +196,6 @@ if [ "${VIA_NICKEL}" = "true" ]; then
     if [ ! -d "/tmp/MiniClock" ]; then
         export KO_DONT_GRAB_INPUT="true"
     fi
-fi
-
-# fallback for old fmon, KFMon and advboot users (-> if no args were passed to the script, start the FM)
-if [ "$#" -eq 0 ]; then
-    args="/mnt/onboard"
-else
-    args="$*"
 fi
 
 # check whether PLATFORM & PRODUCT have a value assigned by rcS
@@ -266,6 +313,7 @@ CRASH_PREV_TS=0
 # List of supported special return codes
 KO_RC_RESTART=85
 KO_RC_USBMS=86
+KO_RC_HALT=88
 # Because we *want* an initial fbdepth pass ;).
 RETURN_VALUE=${KO_RC_RESTART}
 while [ ${RETURN_VALUE} -ne 0 ]; do
@@ -278,11 +326,11 @@ while [ ${RETURN_VALUE} -ne 0 ]; do
         ko_do_dns
     fi
 
-    ./reader.lua "${args}" >>crash.log 2>&1
+    ./reader.lua "$@" >>crash.log 2>&1
     RETURN_VALUE=$?
 
     # Did we crash?
-    if [ ${RETURN_VALUE} -ne 0 ] && [ ${RETURN_VALUE} -ne ${KO_RC_RESTART} ] && [ ${RETURN_VALUE} -ne ${KO_RC_USBMS} ]; then
+    if [ ${RETURN_VALUE} -ne 0 ] && [ ${RETURN_VALUE} -ne ${KO_RC_RESTART} ] && [ ${RETURN_VALUE} -ne ${KO_RC_USBMS} ] && [ ${RETURN_VALUE} -ne ${KO_RC_HALT} ]; then
         # Increment the crash counter
         CRASH_COUNT=$((CRASH_COUNT + 1))
         CRASH_TS=$(date +'%s')
@@ -441,6 +489,11 @@ while [ ${RETURN_VALUE} -ne 0 ]; do
         fi
         rm -rf "${USBMS_HOME}"
     fi
+
+    # Did we request a reboot/shutdown?
+    if [ ${RETURN_VALUE} -eq ${KO_RC_HALT} ]; then
+        break
+    fi
 done
 
 # Restore original fb bitdepth if need be...
@@ -456,28 +509,33 @@ fi
 # Restore original CPUFreq governor if need be...
 if [ -n "${ORIG_CPUFREQ_GOV}" ]; then
     echo "${ORIG_CPUFREQ_GOV}" >"/sys/devices/system/cpu/cpu0/cpufreq/scaling_governor"
+
+    # NOTE: Leave DVFS alone, it'll be handled by Nickel if necessary.
 fi
 
-if [ "${VIA_NICKEL}" = "true" ]; then
-    if [ "${FROM_KFMON}" = "true" ]; then
-        # KFMon is the only launcher that has a toggle to either reboot or restart Nickel on exit
-        if grep -q "reboot_on_exit=false" "/mnt/onboard/.adds/kfmon/config/koreader.ini" 2>/dev/null; then
-            # KFMon asked us to restart nickel on exit (default since KFMon 0.9.5)
-            ./nickel.sh &
+# If we requested a reboot/shutdown, no need to bother with this...
+if [ ${RETURN_VALUE} -ne ${KO_RC_HALT} ]; then
+    if [ "${VIA_NICKEL}" = "true" ]; then
+        if [ "${FROM_KFMON}" = "true" ]; then
+            # KFMon is the only launcher that has a toggle to either reboot or restart Nickel on exit
+            if grep -q "reboot_on_exit=false" "/mnt/onboard/.adds/kfmon/config/koreader.ini" 2>/dev/null; then
+                # KFMon asked us to restart nickel on exit (default since KFMon 0.9.5)
+                ./nickel.sh &
+            else
+                # KFMon asked us to restart the device on exit
+                /sbin/reboot
+            fi
         else
-            # KFMon asked us to restart the device on exit
-            /sbin/reboot
+            # Otherwise, just restart Nickel
+            ./nickel.sh &
         fi
     else
-        # Otherwise, just restart Nickel
-        ./nickel.sh &
-    fi
-else
-    # if we were called from advboot then we must reboot to go to the menu
-    # NOTE: This is actually achieved by checking if KSM or a KSM-related script is running:
-    #       This might lead to false-positives if you use neither KSM nor advboot to launch KOReader *without nickel running*.
-    if ! pgrep -f kbmenu >/dev/null 2>&1; then
-        /sbin/reboot
+        # if we were called from advboot then we must reboot to go to the menu
+        # NOTE: This is actually achieved by checking if KSM or a KSM-related script is running:
+        #       This might lead to false-positives if you use neither KSM nor advboot to launch KOReader *without nickel running*.
+        if ! pgrep -f kbmenu >/dev/null 2>&1; then
+            /sbin/reboot
+        fi
     fi
 fi
 

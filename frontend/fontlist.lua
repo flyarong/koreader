@@ -1,14 +1,15 @@
 local CanvasContext = require("document/canvascontext")
 local DataStorage = require("datastorage")
-local dump = require("dump")
 local FT = require("ffi/freetype")
 local HB = require("ffi/harfbuzz")
+local Persist = require("persist")
 local util = require("util")
 local logger = require("logger")
 local dbg = require("dbg")
 
 local FontList = {
     fontdir = "./fonts",
+    cachedir = DataStorage:getDataDir() .. "/cache/fontlist", -- in a subdirectory, so as not to mess w/ the Cache module.
     fontlist = {},
     fontinfo = {},
     fontnames = {},
@@ -168,12 +169,18 @@ end
 function FontList:getFontList()
     if #self.fontlist > 0 then return self.fontlist end
 
-    local cache_file = DataStorage:getDataDir() .. "/cache/fontinfo.dat"
-    local ok
-    ok, self.fontinfo = pcall(dofile, cache_file)
-    if not ok or not self.fontinfo then
-        self.fontinfo = {}
+    local cache = Persist:new{
+        path = self.cachedir .. "/fontinfo.dat"
+    }
+
+    local t, err = cache:load()
+    if not t then
+        logger.info(cache.path, err, "initializing it")
+
+        -- Create new subdirectory
+        lfs.mkdir(self.cachedir)
     end
+    self.fontinfo = t or {}
 
     -- used for marking fonts we're seeing
     local mark = { cache_dirty = false }
@@ -194,16 +201,10 @@ function FontList:getFontList()
 
     if dbg.is_verbose then
         -- when verbose debug is on, always dump the cache in plain text (to inspect the db output)
-        local cache = io.open(cache_file, "w")
-        cache:write("return " .. dump(self.fontinfo))
-        cache:close()
+        cache:save(self.fontinfo)
     elseif mark.cache_dirty then
         -- otherwise dump the db in binary (more compact), and only if something has changed
-        local bc = load("return " .. dump(self.fontinfo))
-        bc = string.dump(bc, true)
-        local cache = io.open(cache_file, "wb")
-        cache:write(bc)
-        cache:close()
+        cache:save(self.fontinfo, true)
     end
 
     local names = self.fontnames

@@ -27,7 +27,7 @@ local Geom = require("ui/geometry")
 local GestureRange = require("ui/gesturerange")
 local HorizontalGroup = require("ui/widget/horizontalgroup")
 local HorizontalSpan = require("ui/widget/horizontalspan")
-local ImageWidget = require("ui/widget/imagewidget")
+local IconWidget = require("ui/widget/iconwidget")
 local InputContainer = require("ui/widget/container/inputcontainer")
 local MovableContainer = require("ui/widget/container/movablecontainer")
 local Size = require("ui/size")
@@ -51,6 +51,8 @@ local ConfirmBox = InputContainer:new{
     margin = Size.margin.default,
     padding = Size.padding.default,
     dismissable = true, -- set to false if any button callback is required
+    flush_events_on_show = false, -- set to true when it might be displayed after
+                                  -- some processing, to avoid accidental dismissal
 }
 
 function ConfirmBox:init()
@@ -80,9 +82,8 @@ function ConfirmBox:init()
     }
     local content = HorizontalGroup:new{
         align = "center",
-        ImageWidget:new{
-            file = "resources/info-i.png",
-            scale_for_dpi = true,
+        IconWidget:new{
+            icon = "notice-question",
         },
         HorizontalSpan:new{ width = Size.span.horizontal_default },
         text_widget,
@@ -136,6 +137,7 @@ function ConfirmBox:init()
     local frame = FrameContainer:new{
         background = Blitbuffer.COLOR_WHITE,
         margin = self.margin,
+        radius = Size.radius.window,
         padding = self.padding,
         padding_bottom = 0, -- no padding below buttontable
         VerticalGroup:new{
@@ -182,11 +184,15 @@ function ConfirmBox:onShow()
     UIManager:setDirty(self, function()
         return "ui", self[1][1].dimen
     end)
+    if self.flush_events_on_show then
+        -- Discard queued and coming up events to avoid accidental dismissal
+        UIManager:discardEvents(true)
+    end
 end
 
 function ConfirmBox:onCloseWidget()
     UIManager:setDirty(nil, function()
-        return "partial", self[1][1].dimen
+        return "ui", self[1][1].dimen
     end)
 end
 

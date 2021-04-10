@@ -1,11 +1,25 @@
 local lfs = require("libs/libkoreader-lfs")
 local logger = require("logger")
+local _ = require("gettext")
 
 local DEFAULT_PLUGIN_PATH = "plugins"
+
+-- plugin names that were removed and are no longer available.
 local OBSOLETE_PLUGINS = {
+    calibrecompanion = true,
     storagestat = true,
     kobolight = true,
 }
+-- Deprecated plugins are still available, but show a hint about deprecation.
+local function getMenuTable(plugin)
+    local t = {}
+    t.name = plugin.name
+    t.fullname = string.format("%s%s", plugin.fullname or plugin.name,
+        plugin.deprecated and " (" .. _("outdated") .. ")" or "")
+    t.description = string.format("%s%s", plugin.description,
+        type(plugin.deprecated) == "string"  and "\n\n" .. plugin.deprecated or "")
+    return t
+end
 
 local function sandboxPluginEventHandlers(plugin)
     for key, value in pairs(plugin) do
@@ -49,6 +63,13 @@ function PluginLoader:loadPlugins()
         else
             logger.err("extra_plugin_paths config only accepts string or table value")
         end
+    else
+        local data_dir = require("datastorage"):getDataDir()
+        if data_dir ~= "." then
+            local extra_path = data_dir .. "/plugins/"
+            G_reader_settings:saveSetting("extra_plugin_paths", { extra_path })
+            table.insert(lookup_path_list, extra_path)
+        end
     end
 
     -- keep reference to old value so they can be restored later
@@ -63,8 +84,8 @@ function PluginLoader:loadPlugins()
     for element in pairs(OBSOLETE_PLUGINS) do
         plugins_disabled[element] = true
     end
-    for _,lookup_path in ipairs(lookup_path_list) do
-        logger.info('Loading plugins from directory:', lookup_path)
+    for _, lookup_path in ipairs(lookup_path_list) do
+        logger.info("Loading plugins from directory:", lookup_path)
         for entry in lfs.dir(lookup_path) do
             local plugin_root = lookup_path.."/"..entry
             local mode = lfs.attributes(plugin_root, "mode")
@@ -103,7 +124,7 @@ function PluginLoader:loadPlugins()
     end
 
     -- set package path for all loaded plugins
-    for _,plugin in ipairs(self.enabled_plugins) do
+    for _, plugin in ipairs(self.enabled_plugins) do
         package.path = string.format("%s;%s/?.lua", package.path, plugin.path)
         package.cpath = string.format("%s;%s/lib/?.so", package.cpath, plugin.path)
     end
@@ -121,19 +142,13 @@ function PluginLoader:genPluginManagerSubItem()
     end
 
     for _, plugin in ipairs(enabled_plugins) do
-        local element = {}
-        element.fullname = plugin.fullname or plugin.name
-        element.name = plugin.name
-        element.description = plugin.description
+        local element = getMenuTable(plugin)
         element.enable = true
         table.insert(self.all_plugins, element)
     end
 
     for _, plugin in ipairs(disabled_plugins) do
-        local element = {}
-        element.fullname = plugin.fullname or plugin.name
-        element.name = plugin.name
-        element.description = plugin.description
+        local element = getMenuTable(plugin)
         element.enable = false
         if not OBSOLETE_PLUGINS[element.name] then
             table.insert(self.all_plugins, element)
@@ -178,7 +193,7 @@ function PluginLoader:createPluginInstance(plugin, attr)
     if ok then  -- re is a plugin instance
         return ok, re
     else  -- re is the error message
-        logger.err('Failed to initialize', plugin.name, 'plugin: ', re)
+        logger.err("Failed to initialize", plugin.name, "plugin: ", re)
         return nil, re
     end
 end

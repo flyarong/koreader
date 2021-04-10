@@ -19,7 +19,7 @@ local TextWidget = require("ui/widget/textwidget")
 local UIManager = require("ui/uimanager")
 local VerticalGroup = require("ui/widget/verticalgroup")
 local VerticalSpan = require("ui/widget/verticalspan")
-local https = require('ssl.https')
+local https = require("ssl.https")
 local _ = require("gettext")
 local Screen = require("device").screen
 local T = require("ffi/util").template
@@ -202,7 +202,7 @@ function GoodreadsBook:genBookInfoGroup()
         })
     else
         table.insert(book_info_group, ImageWidget:new{
-            file = "resources/goodreadsnophoto.png",
+            file = "plugins/goodreads.koplugin/goodreadsnophoto.png",
             width = img_width,
             height = img_height,
         })

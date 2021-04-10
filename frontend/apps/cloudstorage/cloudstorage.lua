@@ -32,6 +32,7 @@ local CloudStorage = Menu:extend{
 }
 
 function CloudStorage:init()
+    --- @todo: Probably a good candidate for the new readSetting API
     self.cs_settings = self:readSettings()
     self.show_parent = self
     if self.item then
@@ -301,7 +302,7 @@ function CloudStorage:cloudFile(item, path)
         },
         {
             {
-                text = _("Choose download directory"),
+                text = _("Choose download folder"),
                 callback = function()
                     require("ui/downloadmgr"):new{
                         show_hidden = G_reader_settings:readSetting("show_hidden"),
@@ -341,7 +342,7 @@ end
 
 function CloudStorage:onMenuHold(item)
     if item.type == "folder_long_press" then
-        local title = T(_("Select this directory?\n\n%1"), BD.dirpath(item.url))
+        local title = T(_("Select this folder?\n\n%1"), BD.dirpath(item.url))
         local onConfirm = self.onConfirm
         local button_dialog
         button_dialog = ButtonDialogTitle:new{

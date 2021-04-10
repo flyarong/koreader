@@ -11,6 +11,7 @@ local InfoMessage = require("ui/widget/infomessage")
 local InputContainer = require("ui/widget/container/inputcontainer")
 local LinkBox = require("ui/widget/linkbox")
 local Notification = require("ui/widget/notification")
+local QRMessage = require("ui/widget/qrmessage")
 local UIManager = require("ui/uimanager")
 local ffiutil = require("ffi/util")
 local logger = require("logger")
@@ -56,16 +57,18 @@ function ReaderLink:init()
                 overrides = {
                     -- Tap on links have priority over everything (it can
                     -- be disabled with "Tap to follow links" menu item)
-                    "tap_forward",
-                    "tap_backward",
-                    "readermenu_tap",
-                    "readerconfigmenu_tap",
                     "readerhighlight_tap",
-                    "readerfooter_tap",
                     "tap_top_left_corner",
                     "tap_top_right_corner",
                     "tap_left_bottom_corner",
                     "tap_right_bottom_corner",
+                    "readerfooter_tap",
+                    "readerconfigmenu_ext_tap",
+                    "readerconfigmenu_tap",
+                    "readermenu_ext_tap",
+                    "readermenu_tap",
+                    "tap_forward",
+                    "tap_backward",
                 },
                 handler = function(ges) return self:onTap(_, ges) end,
             },
@@ -323,7 +326,7 @@ The recommended value is -2.]]),
                     end
                     return spin_widget
                 end
-                local show_absolute_font_size_widget = G_reader_settings:readSetting("footnote_popup_absolute_font_size") ~= nil
+                local show_absolute_font_size_widget = G_reader_settings:has("footnote_popup_absolute_font_size")
                 spin_widget = get_font_size_widget(show_absolute_font_size_widget)
                 UIManager:show(spin_widget)
             end,
@@ -506,7 +509,6 @@ function ReaderLink:onClearLocationStack(show_notification)
     if show_notification then
         UIManager:show(Notification:new{
             text = _("Location history cleared."),
-            timeout = 2,
         })
     end
     return true
@@ -651,6 +653,24 @@ function ReaderLink:onGoToExternalLink(link_url)
     end
     -- Set up buttons for alternative external link handling methods
     local alt_handlers_buttons = {}
+    table.insert(alt_handlers_buttons, {
+        text = _("Copy"),
+        callback = function()
+            UIManager:close(dialog)
+            Device.input.setClipboardText(link_url)
+        end,
+    })
+    table.insert(alt_handlers_buttons, {
+        text = _("Show QR code"),
+        callback = function()
+            UIManager:close(dialog)
+            UIManager:show(QRMessage:new{
+                text = link_url,
+                width = Device.screen:getWidth(),
+                height = Device.screen:getHeight()
+            })
+        end,
+    })
     if self.ui.wallabag then
         table.insert(alt_handlers_buttons, {
             text = _("Add to Wallabag"),
@@ -709,7 +729,7 @@ function ReaderLink:onGoToExternalLink(link_url)
             callback = function()
                 UIManager:nextTick(function()
                     UIManager:close(dialog)
-                    self.ui:handleEvent(Event:new("LookupWikipedia", wiki_page, false, true, wiki_lang))
+                    self.ui:handleEvent(Event:new("LookupWikipedia", wiki_page, true, false, true, wiki_lang))
                 end)
             end,
         })
@@ -756,7 +776,6 @@ function ReaderLink:onGoBackLink(show_notification_if_empty)
     elseif show_notification_if_empty then
         UIManager:show(Notification:new{
             text = _("Location history is empty."),
-            timeout = 2,
         })
     end
 end
@@ -778,7 +797,6 @@ function ReaderLink:onSwipe(arg, ges)
                 -- so the user knows why
                 UIManager:show(Notification:new{
                     text = _("Location history is empty."),
-                    timeout = 2,
                 })
                 return true
             end

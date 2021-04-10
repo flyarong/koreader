@@ -143,14 +143,23 @@ for dir in common libs; do
     popd || exit 1
 done
 
-BREW=/usr/local/opt
-cp "${BREW}/gettext/lib/libintl.8.dylib" "${BREW}/webp/lib/libwebp.7.dylib" libs
-chmod 777 libs/libintl.8.dylib libs/libwebp.7.dylib
+# Brew has a tendency to infiltrate our builds and take over some of the dependencies...
+BREW="$(brew --prefix)/opt"
+# So, because it made us pick those up, ship 'em
+cp "${BREW}/gettext/lib/libintl.8.dylib" "${BREW}/webp/lib/libwebp.7.dylib" "${BREW}/libsodium/lib/libsodium.23.dylib" libs
+chmod 777 libs/libintl.8.dylib libs/libwebp.7.dylib libs/libsodium.23.dylib
+# Update their name
 install_name_tool -id libintl.8.dylib libs/libintl.8.dylib
 install_name_tool -id libwebp.7.dylib libs/libwebp.7.dylib
-install_name_tool -change ${BREW}/gettext/lib/libintl.8.dylib libs/libintl.8.dylib libs/libglib-2.0.dylib
-install_name_tool -change ${BREW}/webp/lib/libwebp.7.dylib libs/libwebp.7.dylib libs/liblept.5.dylib
-install_name_tool -change ${BREW}/webp/lib/libwebp.7.dylib libs/libwebp.7.dylib libs/libtesseract.3.dylib
+install_name_tool -id libsodium.23.dylib libs/libsodium.23.dylib
+# And make sure anything that depends on them points to ours
+install_name_tool -change "${BREW}/gettext/lib/libintl.8.dylib" libs/libintl.8.dylib libs/libglib-2.0.dylib
+install_name_tool -change "${BREW}/webp/lib/libwebp.7.dylib" libs/libwebp.7.dylib libs/liblept.5.dylib
+install_name_tool -change "${BREW}/webp/lib/libwebp.7.dylib" libs/libwebp.7.dylib libs/libtesseract.3.dylib
+install_name_tool -change "${BREW}/libsodium/lib/libsodium.23.dylib" libs/libsodium.23.dylib libs/libczmq.1.dylib
+install_name_tool -change "${BREW}/libsodium/lib/libsodium.23.dylib" libs/libsodium.23.dylib libs/libfmq.1.dylib
+install_name_tool -change "${BREW}/libsodium/lib/libsodium.23.dylib" libs/libsodium.23.dylib libs/libzmq.4.dylib
+install_name_tool -change "${BREW}/libsodium/lib/libsodium.23.dylib" libs/libsodium.23.dylib libs/libzyre.1.dylib
 
 # prepare bundle for distribution
 ln -s /usr/bin/tar tar
@@ -160,14 +169,12 @@ rm -rf cache clipboard history ota \
     l10n/.git l10n/.tx l10n/templates l10n/LICENSE l10n/Makefile l10n/README.md \
     plugins/SSH.koplugin plugins/hello.koplugin plugins/timesync.koplugin \
     plugins/autofrontlight.koplugin resources/fonts resources/icons/src \
-    resources/kobo-touch-probe.png resources/koreader.icns rocks/bin \
-    rocks/lib/luarocks screenshots spec tools
+    rocks/bin rocks/lib/luarocks screenshots spec tools
 
 # adjust reader.lua a bit.
 
 sed '1d' reader.lua >tempfile
 sed -i.backup 's/.\/reader.lua/koreader/' tempfile
-sed -i.backup 's/the last viewed document will be opened"/" .. os.getenv("HOME") .. " will be opened"/' tempfile
 mv tempfile reader.lua
 rm -f tempfile*
 chmod -x reader.lua
@@ -185,15 +192,10 @@ for path in l10n/*; do
     fi
 done
 
-# package as DMG if create-dmg is available
-# reduces size from 80MB to 40MB
 mv "${APP_PATH}" "${APP_BUNDLE}.app"
 
-if command_exists "create-dmg"; then
-    # create KOReader-$VERSION.dmg with KOReader.app inside
-    create-dmg "${APP_BUNDLE}.app" --overwrite
-    rm -rf "${APP_BUNDLE}.app"
-else
-    # rename as KOReader-$VERSION.app
-    mv -v "${APP_BUNDLE}.app" "${APP_BUNDLE}-${VERSION}.app"
+# package as 7z reduces size from 80MB to 30MB
+if command_exists "7z"; then
+    7z a -l -m0=lzma2 -mx=9 "${APP_BUNDLE}-${VERSION}.7z" "${APP_BUNDLE}.app"
+    rm -rfv "${APP_BUNDLE}.app"
 fi

@@ -81,7 +81,11 @@ local ReaderUI = InputContainer:new{
 function ReaderUI:registerModule(name, ui_module, always_active)
     if name then self[name] = ui_module end
     ui_module.name = "reader" .. name
-    table.insert(always_active and self.active_widgets or self, ui_module)
+    table.insert(self, ui_module)
+    if always_active then
+        -- to get events even when hidden
+        table.insert(self.active_widgets, ui_module)
+    end
 end
 
 function ReaderUI:registerPostInitCallback(callback)
@@ -218,13 +222,15 @@ function ReaderUI:init()
                 document = self.document,
             })
         end
-        -- activity indicator when some configurations take long take to affect
-        self:registerModule("activityindicator", ReaderActivityIndicator:new{
-            dialog = self.dialog,
-            view = self.view,
-            ui = self,
-            document = self.document,
-        })
+        -- activity indicator for when some settings take time to take effect (Kindle under KPV)
+        if not ReaderActivityIndicator:isStub() then
+            self:registerModule("activityindicator", ReaderActivityIndicator:new{
+                dialog = self.dialog,
+                view = self.view,
+                ui = self,
+                document = self.document,
+            })
+        end
     end
     -- for page specific controller
     if self.document.info.has_pages then
@@ -326,7 +332,7 @@ function ReaderUI:init()
             ui = self
         })
     end
-    self.disable_double_tap = G_reader_settings:readSetting("disable_double_tap") ~= false
+    self.disable_double_tap = G_reader_settings:nilOrTrue("disable_double_tap")
     -- back location stack
     self:registerModule("back", ReaderBack:new{
         ui = self,

@@ -105,6 +105,15 @@ function TouchMenuItem:init()
             face = self.face
         end
     end
+    local text_widget = TextWidget:new{
+        text = text,
+        max_width = text_max_width,
+        fgcolor = item_enabled ~= false and Blitbuffer.COLOR_BLACK or Blitbuffer.COLOR_DARK_GRAY,
+        face = face,
+        forced_baseline = forced_baseline,
+        forced_height = forced_height,
+    }
+    self.text_truncated = text_widget:isTruncated()
     self.item_frame = FrameContainer:new{
         width = self.dimen.w,
         bordersize = 0,
@@ -115,14 +124,7 @@ function TouchMenuItem:init()
                 dimen = Geom:new{ w = checked_widget:getSize().w },
                 checkmark_widget,
             },
-            TextWidget:new{
-                text = text,
-                max_width = text_max_width,
-                fgcolor = item_enabled ~= false and Blitbuffer.COLOR_BLACK or Blitbuffer.COLOR_DARK_GRAY,
-                face = face,
-                forced_baseline = forced_baseline,
-                forced_height = forced_height,
-            },
+            text_widget,
         },
     }
 
@@ -158,26 +160,35 @@ function TouchMenuItem:onTapSelect(arg, ges)
     if G_reader_settings:isFalse("flash_ui") then
         self.menu:onMenuSelect(self.item)
     else
+        -- c.f., ui/widget/iconbutton for the canonical documentation about the flash_ui code flow
+
+        -- The item frame's width stops at the text width, but we want it to match the menu's length instead
+        local highlight_dimen = self.item_frame.dimen
+        highlight_dimen.w = self.item_frame.width
+
+        -- Highlight
+        --
         self.item_frame.invert = true
-        UIManager:widgetRepaint(self[1], self[1].dimen.x, self[1].dimen.y)
-        UIManager:setDirty(nil, function()
-            return "fast", self.dimen
-        end)
-        -- yield to main UI loop to invert item
-        UIManager:tickAfterNext(function()
-            self.menu:onMenuSelect(self.item)
-            self.item_frame.invert = false
-            -- NOTE: We can *usually* optimize that repaint away, as most entries in the menu will at least trigger a menu repaint ;).
-            --       But when stuff doesn't repaint the menu and keeps it open, we need to do it.
-            --       Since it's an *un*highlight containing text, we make it "ui" and not "fast", both so it won't mangle text,
-            --       and because "fast" can have some weird side-effects on some devices in this specific instance...
-            if self.item.hold_keep_menu_open or self.item.keep_menu_open then
-                --UIManager:widgetRepaint(self[1], self[1].dimen.x, self[1].dimen.y)
-                UIManager:setDirty(self.show_parent, function()
-                    return "ui", self.dimen
-                end)
-            end
-        end)
+        UIManager:widgetInvert(self.item_frame, highlight_dimen.x, highlight_dimen.y, highlight_dimen.w)
+        UIManager:setDirty(nil, "fast", highlight_dimen)
+
+        UIManager:forceRePaint()
+        UIManager:yieldToEPDC()
+
+        -- Unhighlight
+        --
+        self.item_frame.invert = false
+        -- NOTE: If the menu is going to be closed, we can safely drop that.
+        if self.item.keep_menu_open then
+            UIManager:widgetInvert(self.item_frame, highlight_dimen.x, highlight_dimen.y, highlight_dimen.w)
+            UIManager:setDirty(nil, "ui", highlight_dimen)
+        end
+
+        -- Callback
+        --
+        self.menu:onMenuSelect(self.item)
+
+        UIManager:forceRePaint()
     end
     return true
 end
@@ -190,24 +201,38 @@ function TouchMenuItem:onHoldSelect(arg, ges)
     if enabled == false then return end
 
     if G_reader_settings:isFalse("flash_ui") then
-        self.menu:onMenuHold(self.item)
+        self.menu:onMenuHold(self.item, self.text_truncated)
     else
+        -- c.f., ui/widget/iconbutton for the canonical documentation about the flash_ui code flow
+
+        -- The item frame's width stops at the text width, but we want it to match the menu's length instead
+        local highlight_dimen = self.item_frame.dimen
+        highlight_dimen.w = self.item_frame.width
+
+        -- Highlight
+        --
         self.item_frame.invert = true
-        UIManager:widgetRepaint(self[1], self[1].dimen.x, self[1].dimen.y)
-        UIManager:setDirty(nil, function()
-            return "fast", self.dimen
-        end)
-        UIManager:tickAfterNext(function()
-            self.menu:onMenuHold(self.item)
-        end)
-        UIManager:scheduleIn(0.5, function()
-            self.item_frame.invert = false
-            -- NOTE: For some reason, this is finicky (I end up with a solid black bar, i.e., text gets inverted, but not the bg?!)
-            --UIManager:widgetRepaint(self[1], self[1].dimen.x, self[1].dimen.y)
-            UIManager:setDirty(self.show_parent, function()
-                return "ui", self.dimen
-            end)
-        end)
+        UIManager:widgetInvert(self.item_frame, highlight_dimen.x, highlight_dimen.y, highlight_dimen.w)
+        UIManager:setDirty(nil, "fast", highlight_dimen)
+
+        UIManager:forceRePaint()
+        UIManager:yieldToEPDC()
+
+        -- Unhighlight
+        --
+        self.item_frame.invert = false
+        -- NOTE: If the menu is going to be closed, we can safely drop that.
+        --       (This field defaults to nil, meaning keep the menu open, hence the negated test)
+        if self.item.hold_keep_menu_open ~= false then
+            UIManager:widgetInvert(self.item_frame, highlight_dimen.x, highlight_dimen.y, highlight_dimen.w)
+            UIManager:setDirty(nil, "ui", highlight_dimen)
+        end
+
+        -- Callback
+        --
+        self.menu:onMenuHold(self.item, self.text_truncated)
+
+        UIManager:forceRePaint()
     end
     return true
 end
@@ -227,13 +252,13 @@ function TouchMenuBar:init()
     local icon_sep_width = Size.span.vertical_default
     local icons_sep_width = icon_sep_width * (#self.icons + 1)
     -- we assume all icons are of the same width
-    local icon_width = Screen:scaleBySize(40)
+    local icon_width = Screen:scaleBySize(DGENERIC_ICON_SIZE)
     local icon_height = icon_width
     -- content_width is the width of all the icon images
     local content_width = icon_width * #self.icons + icons_sep_width
     local spacing_width = (self.width - content_width)/(#self.icons*2)
     local icon_padding = math.min(spacing_width, Screen:scaleBySize(16))
-    self.height = icon_height + Size.span.vertical_large
+    self.height = icon_height + 2*Size.padding.default
     self.show_parent = self.show_parent or self
     self.bar_icon_group = HorizontalGroup:new{}
     -- build up image widget for menu icon bar
@@ -252,10 +277,9 @@ function TouchMenuBar:init()
     for k, v in ipairs(self.icons) do
         local ib = IconButton:new{
             show_parent = self.show_parent,
-            icon_file = v,
+            icon = v,
             width = icon_width,
             height = icon_height,
-            scale_for_dpi = false,
             callback = nil,
             padding_left = icon_padding,
             padding_right = icon_padding,
@@ -381,6 +405,11 @@ function TouchMenuBar:switchToTab(index)
     if index > #self.icon_widgets then
         index = #self.icon_widgets
     end
+    if self.menu.tab_item_table[index] and self.menu.tab_item_table[index].remember == false then
+        -- Don't auto-activate those that should not be
+        -- remembered (FM plus menu on non-touch devices)
+        index = 1
+    end
     self.icon_widgets[index].callback()
 end
 
@@ -394,7 +423,7 @@ local TouchMenu = FocusManager:new{
     item_table = nil,
     item_height = Size.item.height_large,
     bordersize = Size.border.window,
-    padding = Size.padding.default,
+    padding = Size.padding.default, -- (not used at top)
     fface = Font:getFace("ffont"),
     width = nil,
     height = nil,
@@ -448,7 +477,7 @@ function TouchMenu:init()
     self.key_events.Press = { {"Press"}, doc = "chose selected item" }
 
     local icons = {}
-    for _,v in ipairs(self.tab_item_table) do
+    for _, v in ipairs(self.tab_item_table) do
         table.insert(icons, v.icon)
     end
     self.bar = TouchMenuBar:new{
@@ -462,20 +491,22 @@ function TouchMenu:init()
         align = "center",
     }
     -- group for page info
-    local chevron_left = "resources/icons/appbar.chevron.left.png"
-    local chevron_right = "resources/icons/appbar.chevron.right.png"
+    local chevron_left = "chevron.left"
+    local chevron_right = "chevron.right"
     if BD.mirroredUILayout() then
         chevron_left, chevron_right = chevron_right, chevron_left
     end
     self.page_info_left_chev = Button:new{
         icon = chevron_left,
         callback = function() self:onPrevPage() end,
+        hold_callback = function() self:onFirstPage() end,
         bordersize = 0,
         show_parent = self.show_parent,
     }
     self.page_info_right_chev = Button:new{
         icon = chevron_right,
         callback = function() self:onNextPage() end,
+        hold_callback = function() self:onLastPage() end,
         bordersize = 0,
         show_parent = self.show_parent,
     }
@@ -502,7 +533,7 @@ function TouchMenu:init()
     }
     local footer_width = self.width - self.padding*2
     local up_button = IconButton:new{
-        icon_file = "resources/icons/appbar.chevron.up.png",
+        icon = "chevron.up",
         show_parent = self.show_parent,
         padding_left = math.floor(footer_width*0.33*0.1),
         padding_right = math.floor(footer_width*0.33*0.1),
@@ -528,6 +559,7 @@ function TouchMenu:init()
 
     self.menu_frame = FrameContainer:new{
         padding = self.padding,
+        padding_top = 0, -- ensured by TouchMenuBar
         bordersize = self.bordersize,
         background = Blitbuffer.COLOR_WHITE,
         -- menubar and footer will be inserted in
@@ -640,7 +672,7 @@ function TouchMenu:updateItems()
     self.page_info_left_chev:enableDisable(self.page > 1)
     self.page_info_right_chev:enableDisable(self.page < self.page_num)
 
-    local time_info_txt = util.secondsToHour(os.time(), G_reader_settings:nilOrTrue("twelve_hour_clock"))
+    local time_info_txt = util.secondsToHour(os.time(), G_reader_settings:isTrue("twelve_hour_clock"))
     local powerd = Device:getPowerDevice()
     local batt_lvl = powerd:getCapacity()
     local batt_symbol
@@ -678,7 +710,7 @@ function TouchMenu:updateItems()
 
     -- recalculate dimen based on new layout
     self.dimen.w = self.width
-    self.dimen.h = self.item_group:getSize().h + self.bordersize*2 + self.padding*2
+    self.dimen.h = self.item_group:getSize().h + self.bordersize*2 + self.padding -- (no padding at top)
     self.selected = { x = self.cur_tab, y = 1 } -- reset the position of the focusmanager
 
     -- NOTE: We use a slightly ugly hack to detect a brand new menu vs. a tab switch,
@@ -711,15 +743,16 @@ function TouchMenu:switchMenuTab(tab_num)
     if self.tab_item_table[tab_num].callback then
         self.tab_item_table[tab_num].callback()
     end
-    if self.cur_tab ~= tab_num then
-        -- it's like getting a new menu everytime we switch tab!
-        self.page = 1
-        -- clear item table stack
-        self.item_table_stack = {}
-        self.cur_tab = tab_num
-        self.item_table = self.tab_item_table[tab_num]
-        self:updateItems()
-    end
+
+    -- It's like getting a new menu everytime we switch tab!
+    -- Also, switching to the _same_ tab resets the stack and takes us back to
+    -- the top of the menu tree
+    self.page = 1
+    -- clear item table stack
+    self.item_table_stack = {}
+    self.cur_tab = tab_num
+    self.item_table = self.tab_item_table[tab_num]
+    self:updateItems()
 end
 
 function TouchMenu:backToUpperMenu()
@@ -752,6 +785,18 @@ function TouchMenu:onPrevPage()
     elseif self.page == 1 then
         self.page = self.page_num
     end
+    self:updateItems()
+    return true
+end
+
+function TouchMenu:onFirstPage()
+    self.page = 1
+    self:updateItems()
+    return true
+end
+
+function TouchMenu:onLastPage()
+    self.page = self.page_num
     self:updateItems()
     return true
 end
@@ -792,32 +837,38 @@ function TouchMenu:onMenuSelect(item)
                 callback = item.callback_func()
             end
             if callback then
-                -- put stuff in scheduler so we can see
-                -- the effect of inverted menu item
-                UIManager:tickAfterNext(function()
-                    -- Provide callback with us, so it can call our
-                    -- closemenu() or updateItems() when it sees fit
-                    -- (if not providing checked or checked_fund, caller
-                    -- must set keep_menu_open=true if that is wished)
-                    callback(self)
-                    if refresh then
-                        self:updateItems()
-                    elseif not item.keep_menu_open then
-                        self:closeMenu()
-                    end
-                end)
+                -- Provide callback with us, so it can call our
+                -- closemenu() or updateItems() when it sees fit
+                -- (if not providing checked or checked_fund, caller
+                -- must set keep_menu_open=true if that is wished)
+                callback(self)
+                if refresh then
+                    self:updateItems()
+                elseif not item.keep_menu_open then
+                    self:closeMenu()
+                end
             end
         else
             table.insert(self.item_table_stack, self.item_table)
             self.item_table = sub_item_table
             self.page = 1
+            if self.item_table.open_on_menu_item_id_func then
+                self:_recalculatePageLayout() -- we need an accurate self.perpage
+                local open_id = self.item_table.open_on_menu_item_id_func()
+                for i = 1, #self.item_table do
+                    if self.item_table[i].menu_item_id == open_id then
+                        self.page = math.floor( (i - 1) / self.perpage ) + 1
+                        break
+                    end
+                end
+            end
             self:updateItems()
         end
     end
     return true
 end
 
-function TouchMenu:onMenuHold(item)
+function TouchMenu:onMenuHold(item, text_truncated)
     if self.touch_menu_callback then
         self.touch_menu_callback()
     end
@@ -836,17 +887,15 @@ function TouchMenu:onMenuHold(item)
             callback = item.hold_callback_func()
         end
         if callback then
-            UIManager:tickAfterNext(function()
-                -- With hold, the default is to keep menu open, as we're
-                -- most often showing a ConfirmBox that can be cancelled
-                -- (provide hold_keep_menu_open=false to override)
-                if item.hold_keep_menu_open == false then
-                    self:closeMenu()
-                end
-                -- Provide callback with us, so it can call our
-                -- closemenu() or updateItems() when it sees fit
-                callback(self)
-            end)
+            -- With hold, the default is to keep menu open, as we're
+            -- most often showing a ConfirmBox that can be cancelled
+            -- (provide hold_keep_menu_open=false to override)
+            if item.hold_keep_menu_open == false then
+                self:closeMenu()
+            end
+            -- Provide callback with us, so it can call our
+            -- closemenu() or updateItems() when it sees fit
+            callback(self)
         end
     elseif item.help_text or type(item.help_text_func) == "function" then
         local help_text = item.help_text
@@ -856,6 +905,8 @@ function TouchMenu:onMenuHold(item)
         if help_text then
             UIManager:show(InfoMessage:new{ text = help_text, })
         end
+    elseif text_truncated then
+        UIManager:show(InfoMessage:new{ text = getMenuText(item), })
     end
     return true
 end

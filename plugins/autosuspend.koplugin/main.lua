@@ -9,9 +9,8 @@ if not Device:isCervantes() and
     return { disabled = true, }
 end
 
-local DataStorage = require("datastorage")
-local LuaSettings = require("luasettings")
 local PluginShare = require("pluginshare")
+local TimeVal = require("ui/timeval")
 local UIManager = require("ui/uimanager")
 local WidgetContainer = require("ui/widget/container/widgetcontainer")
 local logger = require("logger")
@@ -19,47 +18,27 @@ local _ = require("gettext")
 local T = require("ffi/util").template
 
 local default_autoshutdown_timeout_seconds = 3*24*60*60
+local default_auto_suspend_timeout_seconds = 60*60
 
 local AutoSuspend = WidgetContainer:new{
     name = "autosuspend",
     is_doc_only = false,
     autoshutdown_timeout_seconds = G_reader_settings:readSetting("autoshutdown_timeout_seconds") or default_autoshutdown_timeout_seconds,
-    settings = LuaSettings:open(DataStorage:getSettingsDir() .. "/koboautosuspend.lua"),
-    last_action_sec = os.time(),
+    auto_suspend_timeout_seconds = G_reader_settings:readSetting("auto_suspend_timeout_seconds") or default_auto_suspend_timeout_seconds,
+    last_action_tv = TimeVal:now(),
     standby_prevented = false,
 }
 
-function AutoSuspend:_readTimeoutSecFrom(settings)
-    local sec = settings:readSetting("auto_suspend_timeout_seconds")
-    if type(sec) == "number" then
-        return sec
-    end
-    return -1
-end
-
-function AutoSuspend:_readTimeoutSec()
-    local candidates = { self.settings, G_reader_settings }
-    for _, candidate in ipairs(candidates) do
-        local sec = self:_readTimeoutSecFrom(candidate)
-        if sec ~= -1 then
-            return sec
-        end
-    end
-
-    -- default setting is 60 minutes
-    return 60 * 60
-end
-
 function AutoSuspend:_enabled()
-    return self.auto_suspend_sec > 0
+    return self.auto_suspend_timeout_seconds > 0
 end
 
 function AutoSuspend:_enabledShutdown()
     return Device:canPowerOff() and self.autoshutdown_timeout_seconds > 0
 end
 
-function AutoSuspend:_schedule()
-    if not self:_enabled() then
+function AutoSuspend:_schedule(shutdown_only)
+    if not self:_enabled() and (Device:canPowerOff() and not self:_enabledShutdown()) then
         logger.dbg("AutoSuspend:_schedule is disabled")
         return
     end
@@ -67,29 +46,31 @@ function AutoSuspend:_schedule()
     local delay_suspend, delay_shutdown
 
     if PluginShare.pause_auto_suspend or Device.standby_prevented or Device.powerd:isCharging() then
-        delay_suspend = self.auto_suspend_sec
+        delay_suspend = self.auto_suspend_timeout_seconds
         delay_shutdown = self.autoshutdown_timeout_seconds
     else
-        local now_ts = os.time()
-        delay_suspend = self.last_action_sec + self.auto_suspend_sec - now_ts
-        delay_shutdown = self.last_action_sec + self.autoshutdown_timeout_seconds - now_ts
+        local now_tv = UIManager:getTime()
+        delay_suspend = self.last_action_tv + TimeVal:new{ sec = self.auto_suspend_timeout_seconds } - now_tv
+        delay_suspend = delay_suspend:tonumber()
+        delay_shutdown = self.last_action_tv + TimeVal:new{ sec = self.autoshutdown_timeout_seconds } - now_tv
+        delay_shutdown = delay_shutdown:tonumber()
     end
 
     -- Try to shutdown first, as we may have been woken up from suspend just for the sole purpose of doing that.
     if delay_shutdown <= 0 then
         logger.dbg("AutoSuspend: initiating shutdown")
         UIManager:poweroff_action()
-    elseif delay_suspend <= 0 then
+    elseif delay_suspend <= 0 and not shutdown_only then
         logger.dbg("AutoSuspend: will suspend the device")
         UIManager:suspend()
     else
-        if self:_enabled() then
-            logger.dbg("AutoSuspend: schedule suspend in", delay_suspend)
-            UIManager:scheduleIn(delay_suspend, self._schedule, self)
+        if self:_enabled() and not shutdown_only then
+            logger.dbg("AutoSuspend: scheduling next suspend check in", delay_suspend)
+            UIManager:scheduleIn(delay_suspend, self._schedule, self, shutdown_only)
         end
         if self:_enabledShutdown() then
-            logger.dbg("AutoSuspend: schedule shutdown in", delay_shutdown)
-            UIManager:scheduleIn(delay_shutdown, self._schedule, self)
+            logger.dbg("AutoSuspend: scheduling next shutdown check in", delay_shutdown)
+            UIManager:scheduleIn(delay_shutdown, self._schedule, self, shutdown_only)
         end
     end
 end
@@ -101,17 +82,27 @@ end
 
 function AutoSuspend:_start()
     if self:_enabled() or self:_enabledShutdown() then
-        local now_ts = os.time()
-        logger.dbg("AutoSuspend: start at", now_ts)
-        self.last_action_sec = now_ts
+        local now_tv = UIManager:getTime()
+        logger.dbg("AutoSuspend: start at", now_tv:tonumber())
+        self.last_action_tv = now_tv
         self:_schedule()
     end
 end
 
+-- Variant that only re-engages the shutdown timer for onUnexpectedWakeupLimit
+function AutoSuspend:_restart()
+    if self:_enabledShutdown() then
+        local now_tv = UIManager:getTime()
+        logger.dbg("AutoSuspend: restart at", now_tv:tonumber())
+        self.last_action_tv = now_tv
+        self:_schedule(true)
+    end
+end
+
 function AutoSuspend:init()
+    logger.dbg("AutoSuspend: init")
     if Device:isPocketBook() and not Device:canSuspend() then return end
     UIManager.event_hook:registerWidget("InputEvent", self)
-    self.auto_suspend_sec = self:_readTimeoutSec()
     self:_unschedule()
     self:_start()
     -- self.ui is nil in the testsuite
@@ -119,9 +110,16 @@ function AutoSuspend:init()
     self.ui.menu:registerToMainMenu(self)
 end
 
+-- For event_hook automagic deregistration purposes
+function AutoSuspend:onCloseWidget()
+    logger.dbg("AutoSuspend: onCloseWidget")
+    if Device:isPocketBook() and not Device:canSuspend() then return end
+    self:_unschedule()
+end
+
 function AutoSuspend:onInputEvent()
     logger.dbg("AutoSuspend: onInputEvent")
-    self.last_action_sec = os.time()
+    self.last_action_tv = UIManager:getTime()
 end
 
 function AutoSuspend:onSuspend()
@@ -139,7 +137,15 @@ function AutoSuspend:onResume()
     if self:_enabledShutdown() and Device.wakeup_mgr then
         Device.wakeup_mgr:removeTask(nil, nil, UIManager.poweroff_action)
     end
+    -- Unschedule in case we tripped onUnexpectedWakeupLimit first...
+    self:_unschedule()
     self:_start()
+end
+
+function AutoSuspend:onUnexpectedWakeupLimit()
+    logger.dbg("AutoSuspend: onUnexpectedWakeupLimit")
+    -- Only re-engage the *shutdown* schedule to avoid doing the same dance indefinitely.
+    self:_restart()
 end
 
 function AutoSuspend:onAllowStandby()
@@ -158,22 +164,20 @@ function AutoSuspend:addToMainMenu(menu_items)
             local InfoMessage = require("ui/widget/infomessage")
             local Screen = Device.screen
             local SpinWidget = require("ui/widget/spinwidget")
-            local curr_items = G_reader_settings:readSetting("auto_suspend_timeout_seconds") or 60*60
             local autosuspend_spin = SpinWidget:new {
                 width = math.floor(Screen:getWidth() * 0.6),
-                value = curr_items / 60,
+                value = self.auto_suspend_timeout_seconds / 60,
                 value_min = 5,
                 value_max = 240,
                 value_hold_step = 15,
                 ok_text = _("Set timeout"),
                 title_text = _("Timeout in minutes"),
                 callback = function(autosuspend_spin)
-                    local autosuspend_timeout_seconds = autosuspend_spin.value * 60
-                    self.auto_suspend_sec = autosuspend_timeout_seconds
-                    G_reader_settings:saveSetting("auto_suspend_timeout_seconds", autosuspend_timeout_seconds)
+                    self.auto_suspend_timeout_seconds = autosuspend_spin.value * 60
+                    G_reader_settings:saveSetting("auto_suspend_timeout_seconds", self.auto_suspend_timeout_seconds)
                     UIManager:show(InfoMessage:new{
                         text = T(_("The system will automatically suspend after %1 minutes of inactivity."),
-                            string.format("%.2f", autosuspend_timeout_seconds/60)),
+                            string.format("%.2f", self.auto_suspend_timeout_seconds / 60)),
                         timeout = 3,
                     })
                     self:_unschedule()
@@ -191,10 +195,9 @@ function AutoSuspend:addToMainMenu(menu_items)
             local InfoMessage = require("ui/widget/infomessage")
             local Screen = Device.screen
             local SpinWidget = require("ui/widget/spinwidget")
-            local curr_items = self.autoshutdown_timeout_seconds
             local autosuspend_spin = SpinWidget:new {
                 width = math.floor(Screen:getWidth() * 0.6),
-                value = curr_items / 60 / 60,
+                value = self.autoshutdown_timeout_seconds / 60 / 60,
                 -- About a minute, good for testing and battery life fanatics.
                 -- Just high enough to avoid an instant shutdown death scenario.
                 value_min = 0.017,
@@ -206,12 +209,11 @@ function AutoSuspend:addToMainMenu(menu_items)
                 ok_text = _("Set timeout"),
                 title_text = _("Timeout in hours"),
                 callback = function(autosuspend_spin)
-                    local autoshutdown_timeout_seconds = math.floor(autosuspend_spin.value * 60*60)
-                    self.autoshutdown_timeout_seconds = autoshutdown_timeout_seconds
-                    G_reader_settings:saveSetting("autoshutdown_timeout_seconds", autoshutdown_timeout_seconds)
+                    self.autoshutdown_timeout_seconds = math.floor(autosuspend_spin.value * 60 * 60)
+                    G_reader_settings:saveSetting("autoshutdown_timeout_seconds", self.autoshutdown_timeout_seconds)
                     UIManager:show(InfoMessage:new{
                         text = T(_("The system will automatically shut down after %1 hours of inactivity."),
-                            string.format("%.2f", autoshutdown_timeout_seconds/60/60)),
+                            string.format("%.2f", self.autoshutdown_timeout_seconds / 60 / 60)),
                         timeout = 3,
                     })
                     self:_unschedule()

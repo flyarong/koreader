@@ -1,11 +1,20 @@
 #!/bin/sh
 export LC_ALL="en_US.UTF-8"
-
 # working directory of koreader
 KOREADER_DIR="${0%/*}"
 
 # we're always starting from our working directory
 cd "${KOREADER_DIR}" || exit
+
+# reMarkable 2 check
+IFS= read -r MACHINE_TYPE <"/sys/devices/soc0/machine"
+if [ "reMarkable 2.0" = "${MACHINE_TYPE}" ]; then
+    if [ -z "${RM2FB_SHIM}" ]; then
+        echo "reMarkable 2 requires RM2FB to work, visit https://github.com/ddvk/remarkable2-framebuffer for instructions how to setup"
+        exit 1
+    fi
+    export KO_DONT_GRAB_INPUT=1
+fi
 
 # update to new version from OTA directory
 ko_update_check() {
@@ -42,7 +51,7 @@ ko_update_check() {
         rm -f "${NEWUPDATE}" # always purge newupdate in all cases to prevent update loop
         unset BLOCKS CPOINTS
         # Ensure everything is flushed to disk before we restart. This *will* stall for a while on slow storage!
-        sync
+        busybox sync
 
         if [ ${USING_BUTTON_LISTEN} -eq 0 ]; then
             systemctl start button-listen
@@ -123,12 +132,6 @@ if [ -e crash.log ]; then
     mv -f crash.log.new crash.log
 fi
 
-if [ "$#" -eq 0 ]; then
-    args="/home/root"
-else
-    args="$*"
-fi
-
 CRASH_COUNT=0
 CRASH_TS=0
 CRASH_PREV_TS=0
@@ -143,7 +146,7 @@ while [ ${RETURN_VALUE} -ne 0 ]; do
         ko_do_fbdepth
     fi
 
-    ./reader.lua "${args}" >>crash.log 2>&1
+    ./reader.lua "$@" >>crash.log 2>&1
     RETURN_VALUE=$?
 
     # Did we crash?
@@ -177,8 +180,8 @@ while [ ${RETURN_VALUE} -ne 0 ]; do
         # With a little notice at the top of the screen, on a big gray screen of death ;).
         ./fbink -q -b -c -B GRAY9 -m -y 1 "Don't Panic! (Crash n°${CRASH_COUNT} -> ${RETURN_VALUE})"
         if [ ${CRASH_COUNT} -eq 1 ]; then
-            # Warn that we're waiting on a tap to continue...
-            ./fbink -q -b -O -m -y 2 "Tap the screen to continue."
+            # Warn that we're sleeping for a bit...
+            ./fbink -q -b -O -m -y 2 "KOReader will restart in 15 sec."
         fi
         # U+1F4A3, the hard way, because we can't use \u or \U escape sequences...
         # shellcheck disable=SC2039
@@ -203,10 +206,7 @@ while [ ${RETURN_VALUE} -ne 0 ]; do
 
         # Pause a bit if it's the first crash in a while, so that it actually has a chance of getting noticed ;).
         if [ ${CRASH_COUNT} -eq 1 ]; then
-            # NOTE: We don't actually care about what read read, we're just using it as a fancy sleep ;).
-            #       i.e., we pause either until the 15s timeout, or until the user touches the screen.
-            # shellcheck disable=SC2039
-            read -r -t 15 </dev/input/event1
+            sleep 15
         fi
         # Cycle the last crash timestamp
         CRASH_PREV_TS=${CRASH_TS}

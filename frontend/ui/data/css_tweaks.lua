@@ -164,7 +164,7 @@ h1 + h6, h2 + h6, h3 + h6, h4 + h6, h5 + h6 { page-break-before: avoid !importan
             {
                 id = "text_align_all_justify",
                 title = _("Justify all elements"),
-                description = _("Text justification is the default, but it may be overridden by publisher styles. This will re-enable it for all elements, which may lose centering in some of them."),
+                description = _("Text justification is the default, but it may be overridden by publisher styles. This will force justification on all elements, some of which may not be centered as expected."),
                 css = [[* { text-align: justify !important; }]],
                 separator = true,
             },
@@ -318,8 +318,7 @@ ruby { display: inline !important; }
                 id = "font_family_all_inherit";
                 title = _("Ignore publisher font families"),
                 description = _("Disable font-family specified in embedded styles."),
-                -- we have to use this trick, font-family handling by crengine is a bit complex
-                css = [[* { font-family: "NoSuchFont" !important; }]],
+                css = [[* { font-family: inherit !important; }]],
             },
             {
                 id = "font_size_all_inherit";
@@ -520,35 +519,35 @@ table, tcaption, tr, th, td { border: black solid 1px; border-collapse: collapse
         {
             id = "a_black";
             title = _("Links always black"),
-            css = [[a { color: black !important; }]],
+            css = [[a, a * { color: black !important; }]],
         },
         {
             id = "a_blue";
             title = _("Links always blue"),
-            css = [[a { color: blue !important; }]],
+            css = [[a, a * { color: blue !important; }]],
             separator = true,
         },
         {
             id = "a_bold";
             title = _("Links always bold"),
-            css = [[a { font-weight: bold !important; }]],
+            css = [[a, a * { font-weight: bold !important; }]],
         },
         {
             id = "a_not_bold";
             title = _("Links never bold"),
-            css = [[a { font-weight: normal !important; }]],
+            css = [[a, a * { font-weight: normal !important; }]],
             separator = true,
         },
         {
             id = "a_underline";
             title = _("Links always underlined"),
-            css = [[a[href] { text-decoration: underline !important; }]],
+            css = [[a[href], a[href] * { text-decoration: underline !important; }]],
             -- Have it apply only on real links with a href=, not on anchors
         },
         {
             id = "a_not_underline";
             title = _("Links never underlined"),
-            css = [[a { text-decoration: none !important; }]],
+            css = [[a, a * { text-decoration: none !important; }]],
         },
     },
     {
@@ -577,18 +576,18 @@ width: 100% !important;
     {
         title = _("Miscellaneous"),
         {
-            title = _("Alternative TOC hints"),
+            title = _("Alternative ToC hints"),
             {
-                title = _("About alternative TOC"),
+                title = _("About alternative ToC"),
                 info_text = _([[
-An alternative table of contents can be built with a long-press on the "Table of contents" menu item.
+An alternative table of contents can be built from the "Table of contents" settings menu.
 
-The TOC will be built from document headings <H1> to <H6>. Some of these can be ignored with the tweaks available here.
-If the document contains no headings, or all are ignored, the alternative TOC will be built from document fragments and will point to the start of each individual HTML file in the EPUB.
+The ToC will be built from document headings <H1> to <H6>. Some of these can be ignored with the tweaks available here.
+If the document contains no headings, or all are ignored, the alternative ToC will be built from document fragments and will point to the start of each individual HTML file in the EPUB.
 
-Hints can be set to other non-heading elements in a user style tweak, so they can be used as TOC items. Since this would be quite book-specific, please see the final tweak for some examples.
+Hints can be set to other non-heading elements in a user style tweak, so they can be used as ToC items. Since this would be quite book-specific, please see the final tweak for some examples.
 
-After applying these tweaks, the alternative TOC needs to be rebuilt by long-pressing "Table of contents" twice: once to restore the original TOC, and once to build the alternative TOC again.]]),
+After applying these tweaks, the alternative ToC needs to be rebuilt by toggling it twice in its menu: once to restore the original ToC, and once to build the alternative ToC again.]]),
                 separator = true,
             },
             {
@@ -629,9 +628,9 @@ After applying these tweaks, the alternative TOC needs to be rebuilt by long-pre
             },
             {
                 id = "alt_toc_level_example";
-                title = _("Example of book specific TOC hints"),
+                title = _("Example of book specific ToC hints"),
                 description = _([[
-If headings or document fragments do not result in a usable TOC, you can inspect the HTML and look for elements that contain chapter titles. Then you can set hints to their class names.
+If headings or document fragments do not result in a usable ToC, you can inspect the HTML and look for elements that contain chapter titles. Then you can set hints to their class names.
 This is just an example, that will need to be adapted into a user style tweak.]]),
                 css = [[
 .book_n    { -cr-hint: toc-level1; }
@@ -797,7 +796,8 @@ This tweak can be duplicated as a user style tweak when books contain footnotes 
                 css = [[
 .footnote, .footnotes, .fn,
 .note, .note1, .note2, .note3,
-.ntb, .ntb-txt, .ntb-txt-j
+.ntb, .ntb-txt, .ntb-txt-j,
+.voetnoten
 {
     -cr-hint: footnote-inpage;
     margin: 0 !important;
@@ -813,7 +813,8 @@ This tweak can be duplicated as a user style tweak when books contain footnotes 
                 css = [[
 .footnote, .footnotes, .fn,
 .note, .note1, .note2, .note3,
-.ntb, .ntb-txt, .ntb-txt-j
+.ntb, .ntb-txt, .ntb-txt-j,
+.voetnoten
 {
     -cr-hint: footnote-inpage;
     margin: 0 !important;
@@ -821,20 +822,6 @@ This tweak can be duplicated as a user style tweak when books contain footnotes 
 }
                 ]],
             },
-        },
-        {
-            id = "epub_switch_show_case";
-            title = _("Toggle alternative EPUB content"),
-            description = _([[
-The EPUB3 format allows a
-<epub:switch> <epub:case> <epub:default>
-construct to provide alternative content to engines that support optional features.
-KOReader currently falls back to hiding all <epub:case> content and shows the <epub:default> content (usually an image).
-This tweak toggles this behavior, and may show the <epub:case> content as plain text.]]),
-            css = [[
-switch > case    { display: inline; }
-switch > default { display: none; }
-            ]],
         },
         {
             id = "no_pseudo_element_before_after";

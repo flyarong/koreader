@@ -6,6 +6,7 @@ local BD = require("ui/bidi")
 local DataStorage = require("datastorage")
 local Dispatcher = require("dispatcher")
 local DocSettings = require("docsettings")
+local DocumentRegistry = require("document/documentregistry")
 local Event = require("ui/event")
 local FFIUtil = require("ffi/util")
 local FileManager = require("apps/filemanager/filemanager")
@@ -25,6 +26,7 @@ local http = require("socket.http")
 local logger = require("logger")
 local ltn12 = require("ltn12")
 local socket = require("socket")
+local socketutil = require("socketutil")
 local util = require("util")
 local _ = require("gettext")
 local T = FFIUtil.template
@@ -378,7 +380,7 @@ function Wallabag:getBearerToken()
         ["Content-type"] = "application/json",
         ["Accept"] = "application/json, */*",
         ["Content-Length"] = tostring(#bodyJSON),
-        }
+    }
     local result = self:callAPI("POST", login_url, headers, bodyJSON, "")
 
     if result then
@@ -485,11 +487,18 @@ function Wallabag:download(article)
     local file_ext = ".epub"
     local item_url = "/api/entries/" .. article.id .. "/export.epub"
 
-    -- If the article links to a pdf file, we will download it directly
-    ---- @todo use hasProvider to skip all supported mimetypes
-    if article.mimetype == "application/pdf" then
-        file_ext = ".pdf"
-        item_url = article.url
+    -- If the article links to a supported file, we will download it directly.
+    -- All webpages are HTML. Ignore them since we want the Wallabag EPUB instead!
+    if article.mimetype ~= "text/html" then
+        if DocumentRegistry:hasProvider(nil, article.mimetype) then
+            file_ext = "."..DocumentRegistry:mimeToExt(article.mimetype)
+            item_url = article.url
+        -- A function represents `null` in our JSON.decode, because `nil` would just disappear.
+        -- In that case, fall back to the file extension.
+        elseif type(article.mimetype) == "function" and DocumentRegistry:hasProvider(article.url) then
+            file_ext = ""
+            item_url = article.url
+        end
     end
 
     local local_path = self.directory .. article_id_prefix .. article.id .. article_id_postfix .. title .. file_ext
@@ -531,21 +540,25 @@ end
 -- filepath: downloads the file if provided, returns JSON otherwise
 ---- @todo separate call to internal API from the download on external server
 function Wallabag:callAPI(method, apiurl, headers, body, filepath, quiet)
-    local request, sink = {}, {}
+    local sink = {}
+    local request = {}
 
     -- Is it an API call, or a regular file direct download?
     if apiurl:sub(1, 1) == "/" then
         -- API call to our server, has the form "/random/api/call"
         request.url = self.server_url .. apiurl
         if headers == nil then
-            headers = { ["Authorization"] = "Bearer " .. self.access_token, }
+            headers = {
+                ["Authorization"] = "Bearer " .. self.access_token,
+            }
         end
     else
         -- regular url link to a foreign server
         local file_url = apiurl
         request.url = file_url
         if headers == nil then
-            headers = {} -- no need for a token here
+            -- no need for a token here
+            headers = {}
         end
     end
 
@@ -562,9 +575,9 @@ function Wallabag:callAPI(method, apiurl, headers, body, filepath, quiet)
     logger.dbg("Wallabag: URL     ", request.url)
     logger.dbg("Wallabag: method  ", method)
 
-    http.TIMEOUT = 30
-    local httpRequest = http.request
-    local code, resp_headers = socket.skip(1, httpRequest(request))
+    socketutil:set_timeout(socketutil.LARGE_BLOCK_TIMEOUT, socketutil.LARGE_TOTAL_TIMEOUT)
+    local code, resp_headers = socket.skip(1, http.request(request))
+    socketutil:reset_timeout()
     -- raise error message when network is unavailable
     if resp_headers == nil then
         logger.dbg("Wallabag: Server error: ", code)

@@ -70,38 +70,46 @@ function FileManager:onSetRotationMode(rotation)
     return true
 end
 
--- init should be set to True when starting the FM for the first time
--- (not coming from the reader). This allows the default to be properly set.
-function FileManager:setRotationMode(init)
+function FileManager:setRotationMode()
     local locked = G_reader_settings:isTrue("lock_rotation")
-    local rotation_mode = G_reader_settings:readSetting("fm_rotation_mode") or Screen.ORIENTATION_PORTRAIT
-    -- Only enforce the default rotation on first FM open, or when switching to the FM when sticky rota is disabled.
-    if init or not locked then
+    if not locked then
+        local rotation_mode = G_reader_settings:readSetting("fm_rotation_mode") or Screen.ORIENTATION_PORTRAIT
         self:onSetRotationMode(rotation_mode)
     end
 end
 
-function FileManager:init()
-    if Device:isTouchDevice() then
-        self:registerTouchZones({
-            {
-                id = "filemanager_swipe",
-                ges = "swipe",
-                screen_zone = {
-                    ratio_x = 0, ratio_y = 0,
-                    ratio_w = Screen:getWidth(), ratio_h = Screen:getHeight(),
-                },
-                handler = function(ges)
-                    self:onSwipeFM(ges)
-                end,
-            },
-        })
+function FileManager:initGesListener()
+    if not Device:isTouchDevice() then
+        return
     end
+
+    self:registerTouchZones({
+        {
+            id = "filemanager_swipe",
+            ges = "swipe",
+            screen_zone = {
+                ratio_x = 0, ratio_y = 0,
+                ratio_w = Screen:getWidth(), ratio_h = Screen:getHeight(),
+            },
+            handler = function(ges)
+                self:onSwipeFM(ges)
+            end,
+        },
+    })
+end
+
+function FileManager:onSetDimensions(dimen)
+    -- update listening according to new screen dimen
+    if Device:isTouchDevice() then
+        self:updateTouchZonesOnScreenResize(dimen)
+    end
+end
+
+function FileManager:setupLayout()
     self.show_parent = self.show_parent or self
-    local icon_size = Screen:scaleBySize(35)
+    local icon_size = Screen:scaleBySize(DGENERIC_ICON_SIZE)
     local home_button = IconButton:new{
-        icon_file = "resources/icons/appbar.home.png",
-        scale_for_dpi = false,
+        icon = "home",
         width = icon_size,
         height = icon_size,
         padding = Size.padding.default,
@@ -113,16 +121,14 @@ function FileManager:init()
     }
 
     local plus_button = IconButton:new{
-        icon_file = "resources/icons/appbar.plus.png",
-        scale_for_dpi = false,
+        icon = "plus",
         width = icon_size,
         height = icon_size,
         padding = Size.padding.default,
         padding_left = Size.padding.large,
         padding_right = Size.padding.large,
         padding_bottom = 0,
-        callback = nil, -- top right corner callback handled by gesture manager
-        hold_callback = nil, -- top right corner hold_callback handled by gesture manager
+        callback = function() self:onShowPlusMenu() end,
     }
 
     self.path_text = TextWidget:new{
@@ -163,9 +169,13 @@ function FileManager:init()
         }
     }
 
-    local g_show_hidden = G_reader_settings:readSetting("show_hidden")
-    local show_hidden = g_show_hidden == nil and DSHOWHIDDENFILES or g_show_hidden
-    local show_unsupported = G_reader_settings:readSetting("show_unsupported")
+    local show_hidden
+    if G_reader_settings:has("show_hidden") then
+        show_hidden = G_reader_settings:isTrue("show_hidden")
+    else
+        show_hidden = DSHOWHIDDENFILES
+    end
+    local show_unsupported = G_reader_settings:isTrue("show_unsupported")
     local file_chooser = FileChooser:new{
         -- remember to adjust the height when new item is added to the group
         path = self.root_path,
@@ -179,7 +189,6 @@ function FileManager:init()
         is_popout = false,
         is_borderless = true,
         has_close_button = true,
-        perpage = G_reader_settings:readSetting("items_per_page"),
         show_unsupported = show_unsupported,
         file_filter = function(filename)
             if DocumentRegistry:hasProvider(filename) then
@@ -218,10 +227,14 @@ function FileManager:init()
     local fileManager = self
 
     function file_chooser:onFileHold(file)  -- luacheck: ignore
+        local is_file = lfs.attributes(file, "mode") == "file"
+        local is_folder = lfs.attributes(file, "mode") == "directory"
+        local is_not_parent_folder = BaseUtil.basename(file) ~= ".."
         local buttons = {
             {
                 {
                     text = C_("File", "Copy"),
+                    enabled = is_not_parent_folder,
                     callback = function()
                         copyFile(file)
                         UIManager:close(self.file_dialog)
@@ -255,6 +268,7 @@ function FileManager:init()
             {
                 {
                     text = _("Cut"),
+                    enabled = is_not_parent_folder,
                     callback = function()
                         cutFile(file)
                         UIManager:close(self.file_dialog)
@@ -262,6 +276,7 @@ function FileManager:init()
                 },
                 {
                     text = _("Delete"),
+                    enabled = is_not_parent_folder,
                     callback = function()
                         UIManager:show(ConfirmBox:new{
                             text = _("Are you sure that you want to delete this file?\n") .. BD.filepath(file) .. ("\n") .. _("If you delete a file, it is permanently lost."),
@@ -277,6 +292,7 @@ function FileManager:init()
                 },
                 {
                     text = _("Rename"),
+                    enabled = is_not_parent_folder,
                     callback = function()
                         UIManager:close(self.file_dialog)
                         fileManager.rename_dialog = InputDialog:new{
@@ -311,7 +327,7 @@ function FileManager:init()
             },
         }
 
-        if lfs.attributes(file, "mode") == "file" and Device:canExecuteScript(file) then
+        if is_file and Device:canExecuteScript(file) then
             -- NOTE: We populate the empty separator, in order not to mess with the button reordering code in CoverMenu
             table.insert(buttons[3],
                 {
@@ -343,7 +359,7 @@ function FileManager:init()
                                 --- @note: Lua 5.1 returns the raw return value from the os's system call. Counteract this madness.
                                 UIManager:show(InfoMessage:new{
                                     text = T(_("The script returned a non-zero status code: %1!"), bit.rshift(rv, 8)),
-                                    icon_file = "resources/info-warn.png",
+                                    icon = "notice-warning",
                                 })
                             end
                         end)
@@ -352,7 +368,7 @@ function FileManager:init()
             )
         end
 
-        if lfs.attributes(file, "mode") == "file" then
+        if is_file then
             table.insert(buttons, {
                 {
                     text = _("Open with…"),
@@ -413,11 +429,11 @@ function FileManager:init()
                 })
             end
         end
-        if lfs.attributes(file, "mode") == "directory" then
+        if is_folder then
             local realpath = BaseUtil.realpath(file)
             table.insert(buttons, {
                 {
-                    text = _("Set as HOME directory"),
+                    text = _("Set as HOME folder"),
                     callback = function()
                         setHome(realpath)
                         UIManager:close(self.file_dialog)
@@ -427,7 +443,7 @@ function FileManager:init()
         end
 
         local title
-        if lfs.attributes(file, "mode") == "directory" then
+        if is_folder then
             title = BD.directory(file:match("([^/]+)$"))
         else
             title = BD.filename(file:match("([^/]+)$"))
@@ -459,14 +475,28 @@ function FileManager:init()
     self.menu = FileManagerMenu:new{
         ui = self
     }
-    self.active_widgets = { Screenshoter:new{ prefix = 'FileManager' } }
+
+    if Device:hasKeys() then
+        self.key_events.Home = { {"Home"}, doc = "go home" }
+        -- Override the menu.lua way of handling the back key
+        self.file_chooser.key_events.Back = { {"Back"}, doc = "go back" }
+        if not Device:hasFewKeys() then
+            -- Also remove the handler assigned to the "Back" key by menu.lua
+            self.file_chooser.key_events.Close = nil
+        end
+    end
+end
+
+function FileManager:init()
+    self:setupLayout()
+
+    local screenshoter = Screenshoter:new{ prefix = 'FileManager' }
+    table.insert(self, screenshoter) -- for regular events
+    self.active_widgets = { screenshoter } -- to get events even when hidden
+
     table.insert(self, self.menu)
-    table.insert(self, FileManagerHistory:new{
-        ui = self,
-    })
-    table.insert(self, FileManagerCollection:new{
-        ui = self,
-    })
+    table.insert(self, FileManagerHistory:new{ ui = self })
+    table.insert(self, FileManagerCollection:new{ ui = self })
     table.insert(self, FileManagerFileSearcher:new{ ui = self })
     table.insert(self, FileManagerShortcuts:new{ ui = self })
     table.insert(self, ReaderDictionary:new{ ui = self })
@@ -475,7 +505,7 @@ function FileManager:init()
     table.insert(self, DeviceListener:new{ ui = self })
 
     -- koreader plugins
-    for _,plugin_module in ipairs(PluginLoader:loadPlugins()) do
+    for _, plugin_module in ipairs(PluginLoader:loadPlugins()) do
         if not plugin_module.is_doc_only then
             local ok, plugin_or_err = PluginLoader:createPluginInstance(
                 plugin_module, { ui = self, })
@@ -495,16 +525,7 @@ function FileManager:init()
         table.insert(self, NetworkListener:new{ ui = self })
     end
 
-    if Device:hasKeys() then
-        self.key_events.Home = { {"Home"}, doc = "go home" }
-        -- Override the menu.lua way of handling the back key
-        self.file_chooser.key_events.Back = { {"Back"}, doc = "go back" }
-        if not Device:hasFewKeys() then
-            -- Also remove the handler assigned to the "Back" key by menu.lua
-            self.file_chooser.key_events.Close = nil
-        end
-    end
-
+    self:initGesListener()
     self:handleEvent(Event:new("SetDimensions", self.dimen))
 end
 
@@ -597,7 +618,7 @@ function FileManager:tapPlus()
         },
         {
             {
-                text = _("Set as HOME directory"),
+                text = _("Set as HOME folder"),
                 callback = function()
                     self:setHome(self.file_chooser.path)
                     UIManager:close(self.file_dialog)
@@ -606,7 +627,7 @@ function FileManager:tapPlus()
         },
         {
             {
-                text = _("Go to HOME directory"),
+                text = _("Go to HOME folder"),
                 callback = function()
                     self:goHome()
                     UIManager:close(self.file_dialog)
@@ -637,11 +658,37 @@ function FileManager:tapPlus()
         table.insert(buttons, 3, {
             {
                 text = _("Import files here"),
-                enabled = Device.isValidPath(self.file_chooser.path),
+                enabled = Device:isValidPath(self.file_chooser.path),
                 callback = function()
                     local current_dir = self.file_chooser.path
                     UIManager:close(self.file_dialog)
                     Device.importFile(current_dir)
+                end,
+            },
+        })
+    end
+
+    if Device:hasExternalSD() then
+        table.insert(buttons, 4, {
+            {
+                text_func = function()
+                    if Device:isValidPath(self.file_chooser.path) then
+                        return _("Switch to SDCard")
+                    else
+                        return _("Switch to internal storage")
+                    end
+                end,
+                callback = function()
+                    if Device:isValidPath(self.file_chooser.path) then
+                        local ok, sd_path = Device:hasExternalSD()
+                        UIManager:close(self.file_dialog)
+                        if ok then
+                            self.file_chooser:changeToPath(sd_path)
+                        end
+                    else
+                        UIManager:close(self.file_dialog)
+                        self.file_chooser:changeToPath(Device.home_dir)
+                    end
                 end,
             },
         })
@@ -666,10 +713,12 @@ function FileManager:reinit(path, focused_file)
     end
     -- reinit filemanager
     self.focused_file = focused_file
-    self:init()
+    self:setupLayout()
+    self:handleEvent(Event:new("SetDimensions", self.dimen))
     self.file_chooser.path_items = path_items_backup
-    -- self:init() has already done file_chooser:refreshPath(), so this one
-    -- looks like not necessary (cheap with classic mode, less cheap with
+    -- self:init() has already done file_chooser:refreshPath()
+    -- (by virtue of rebuilding file_chooser), so this one
+    -- looks unnecessary (cheap with classic mode, less cheap with
     -- CoverBrowser plugin's cover image renderings)
     -- self:onRefresh()
 end
@@ -718,7 +767,7 @@ end
 
 function FileManager:goHome()
     local home_dir = G_reader_settings:readSetting("home_dir")
-    if not home_dir or lfs.attributes(home_dir, "mode") ~= "directory"  then
+    if not home_dir or lfs.attributes(home_dir, "mode") ~= "directory" then
         -- Try some sane defaults, depending on platform
         home_dir = Device.home_dir
     end
@@ -738,7 +787,7 @@ end
 function FileManager:setHome(path)
     path = path or self.file_chooser.path
     UIManager:show(ConfirmBox:new{
-        text = T(_("Set '%1' as HOME directory?"), BD.dirpath(path)),
+        text = T(_("Set '%1' as HOME folder?"), BD.dirpath(path)),
         ok_text = _("Set as HOME"),
         ok_callback = function()
             G_reader_settings:saveSetting("home_dir", path)
@@ -842,7 +891,7 @@ function FileManager:pasteHere(file)
             if mode == "file" then
                 text = T(_("The file %1 already exists. Do you want to overwrite it?"), BD.filename(basename))
             else
-                text = T(_("The directory %1 already exists. Do you want to overwrite it?"), BD.directory(basename))
+                text = T(_("The folder %1 already exists. Overwrite folder?"), BD.directory(basename))
             end
 
             UIManager:show(ConfirmBox:new {

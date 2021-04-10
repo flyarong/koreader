@@ -24,7 +24,6 @@ local RenderText = require("ui/rendertext")
 local RightContainer = require("ui/widget/container/rightcontainer")
 local Size = require("ui/size")
 local TextWidget = require("ui/widget/textwidget")
-local TimeVal = require("ui/timeval")
 local UIManager = require("ui/uimanager")
 local Math = require("optmath")
 local logger = require("logger")
@@ -103,6 +102,9 @@ local TextBoxWidget = InputContainer:new{
                                 -- (set to 0 to disable any tab handling and display a tofu glyph)
     _xtext = nil, -- for internal use
     _alt_color_for_rtl = nil, -- (for debugging) draw LTR glyphs in black, RTL glyphs in gray
+
+    -- for internal use
+    for_measurement_only = nil, -- When the widget is a one-off used to compute text height
 }
 
 function TextBoxWidget:init()
@@ -244,6 +246,7 @@ end
 -- Split the text into logical lines to fit into the text box.
 function TextBoxWidget:_splitToLines()
     self.vertical_string_list = {}
+    self.line_num_to_image = nil
 
     local idx = 1
     local size = #self.charlist
@@ -332,7 +335,7 @@ function TextBoxWidget:_splitToLines()
             end
             if line.hard_newline_at_eot and not line.next_start_offset then
                 -- Add an empty line to reprensent the \n at end of text
-                -- and allow positionning cursor after it
+                -- and allow positioning cursor after it
                 self.vertical_string_list[ln+1] = {
                     offset = size+1,
                     end_offset = nil,
@@ -483,7 +486,7 @@ function TextBoxWidget:_getLinePads(vertical_string)
     return pads
 end
 
--- XText: shape a line into positionned glyphs
+-- XText: shape a line into positioned glyphs
 function TextBoxWidget:_shapeLine(line)
     -- line is an item from self.vertical_string_list
     if line._shaped then
@@ -494,7 +497,7 @@ function TextBoxWidget:_shapeLine(line)
         -- Empty line (first check above is for hard newline at end of file,
         -- second check is for hard newline while not at end of file).
         -- We need to set a direction on this line, so the cursor can be
-        -- positionned accordingly, on the left or on the right of the line
+        -- positioned accordingly, on the left or on the right of the line
         -- (for convenience, we have an empty line inherit the direction
         -- of the previous line if non-empty)
         local offset = line.offset
@@ -721,7 +724,7 @@ function TextBoxWidget:_shapeLine(line)
         xglyph.w = xglyph.x1 - xglyph.x0
         -- Because of glyph substitution and merging (one to many, many to one, many to many,
         -- with advance or zero-advance...), glyphs may not always be fine to position
-        -- the cursor caret. For X/Y/Charpos positionning/guessing, we'll ignore
+        -- the cursor caret. For X/Y/Charpos positioning/guessing, we'll ignore
         -- glyphs that are not cluster_start, and we build here the full cluster x0/x1/w
         -- by merging them from all glyphs part of this cluster
         if xglyph.is_cluster_start then
@@ -732,7 +735,7 @@ function TextBoxWidget:_shapeLine(line)
                 prev_cluster_start_xglyph.w = prev_cluster_start_xglyph.x1 - prev_cluster_start_xglyph.x0
             end
             -- We don't update/decrease prev_cluster_start_xglyph.x0, even if one of its glyph
-            -- has a backward advance that go back the 1st glyph x0, to not mess positionning.
+            -- has a backward advance that go back the 1st glyph x0, to not mess positioning.
         end
         if xglyph.is_tab then
             xglyph.no_drawing = true
@@ -847,6 +850,10 @@ function TextBoxWidget:_renderImage(start_row_idx)
     local scheduled_update = self.scheduled_update
     self.scheduled_update = nil -- reset it, so we don't have to whenever we return below
     if not self.line_num_to_image or not self.line_num_to_image[start_row_idx] then
+        -- No image, no dithering
+        if self.dialog then
+            self.dialog.dithered = false
+        end
         return -- no image on this page
     end
     local image = self.line_num_to_image[start_row_idx]
@@ -891,9 +898,22 @@ function TextBoxWidget:_renderImage(start_row_idx)
         local bbtype = image.bb:getType()
         if bbtype == Blitbuffer.TYPE_BB8A or bbtype == Blitbuffer.TYPE_BBRGB32 then
             -- NOTE: MuPDF feeds us premultiplied alpha (and we don't care w/ GifLib, as alpha is all or nothing).
-            self._bb:pmulalphablitFrom(image.bb, self.width - image.width, 0)
+            if Screen.sw_dithering then
+                self._bb:ditherpmulalphablitFrom(image.bb, self.width - image.width, 0)
+            else
+                self._bb:pmulalphablitFrom(image.bb, self.width - image.width, 0)
+            end
         else
-            self._bb:blitFrom(image.bb, self.width - image.width, 0)
+            if Screen.sw_dithering then
+                self._bb:ditherblitFrom(image.bb, self.width - image.width, 0)
+            else
+                self._bb:blitFrom(image.bb, self.width - image.width, 0)
+            end
+        end
+
+        -- Request dithering
+        if self.dialog then
+            self.dialog.dithered = true
         end
     end
     local status_height = 0
@@ -965,7 +985,8 @@ function TextBoxWidget:_renderImage(start_row_idx)
                                 y = self.dimen.y,
                                 w = image.width,
                                 h = image.height,
-                            }
+                            },
+                            true  -- Request dithering
                         end)
                     end
                 end)
@@ -983,7 +1004,8 @@ function TextBoxWidget:_renderImage(start_row_idx)
                         y = self.dimen.y,
                         w = image.width,
                         h = image.height,
-                    }
+                    },
+                    true  -- Request dithering
                 end)
             end
         end
@@ -1063,6 +1085,7 @@ function TextBoxWidget:onCloseWidget()
 end
 
 function TextBoxWidget:free(full)
+    --print("TextBoxWidget:free", full, "on", self)
     -- logger.dbg("TextBoxWidget:free called")
     -- We are called with full=false from other methods here whenever
     -- :_renderText() is to be called to render a new page (when scrolling
@@ -1087,6 +1110,7 @@ function TextBoxWidget:free(full)
             -- Allow not waiting until Lua gc() to cleanup C XText malloc'ed stuff
             -- (we should not free it if full=false as it is re-usable across renderings)
             self._xtext:free()
+            self._xtext = nil
             -- logger.dbg("TextBoxWidget:_xtext:free()")
         end
     end
@@ -1124,7 +1148,8 @@ function TextBoxWidget:onTapImage(arg, ges)
                         y = self.dimen.y,
                         w = image.width,
                         h = image.height,
-                    }
+                    },
+                    not self.image_show_alt_text  -- Request dithering when showing the image
                 end)
                 return true
             end
@@ -1500,6 +1525,9 @@ function TextBoxWidget:moveCursorToCharPos(charpos)
     if x > self.width - self.cursor_line.dimen.w then
         x = self.width - self.cursor_line.dimen.w
     end
+    if self.for_measurement_only then
+        return -- we're a dummy widget used for computing text height, don't render/refresh anything
+    end
     if not self._bb then
         return -- no bb yet to render the cursor too
     end
@@ -1761,7 +1789,7 @@ function TextBoxWidget:onHoldStartText(_, ges)
         return false -- let event be processed by other widgets
     end
 
-    self.hold_start_tv = TimeVal.now()
+    self.hold_start_tv = UIManager:getTime()
     return true
 end
 
@@ -1793,8 +1821,7 @@ function TextBoxWidget:onHoldReleaseText(callback, ges)
         return false
     end
 
-    local hold_duration = TimeVal.now() - self.hold_start_tv
-    hold_duration = hold_duration.sec + hold_duration.usec/1000000
+    local hold_duration = UIManager:getTime() - self.hold_start_tv
 
     -- If page contains an image, check if Hold is on this image and deal
     -- with it directly
@@ -1888,7 +1915,7 @@ function TextBoxWidget:onHoldReleaseText(callback, ges)
         -- to consider when looking for word boundaries)
         local selected_text = self._xtext:getSelectedWords(sel_start_idx, sel_end_idx, 50)
 
-        logger.dbg("onHoldReleaseText (duration:", hold_duration, ") :",
+        logger.dbg("onHoldReleaseText (duration:", hold_duration:tonumber(), ") :",
                         sel_start_idx, ">", sel_end_idx, "=", selected_text)
         callback(selected_text, hold_duration)
         return true
@@ -1906,7 +1933,7 @@ function TextBoxWidget:onHoldReleaseText(callback, ges)
     end
 
     local selected_text = table.concat(self.charlist, "", sel_start_idx, sel_end_idx)
-    logger.dbg("onHoldReleaseText (duration:", hold_duration, ") :", sel_start_idx, ">", sel_end_idx, "=", selected_text)
+    logger.dbg("onHoldReleaseText (duration:", hold_duration:tonumber(), ") :", sel_start_idx, ">", sel_end_idx, "=", selected_text)
     callback(selected_text, hold_duration)
     return true
 end

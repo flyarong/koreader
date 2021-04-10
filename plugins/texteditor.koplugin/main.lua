@@ -28,6 +28,7 @@ local TextEditor = WidgetContainer:new{
     history_keep_size = 60, -- hom many to keep in settings
     normal_font = "x_smallinfofont",
     monospace_font = "infont",
+    default_font_size = 20, -- x_smallinfofont default size
     min_file_size_warn = 200000, -- warn/ask when opening files bigger than this
 }
 
@@ -45,26 +46,28 @@ function TextEditor:loadSettings()
         return
     end
     self.settings = LuaSettings:open(self.settings_file)
+    -- NOTE: addToHistory assigns a new object
     self.history = self.settings:readSetting("history") or {}
     self.last_view_pos = self.settings:readSetting("last_view_pos") or {}
     self.last_path = self.settings:readSetting("last_path") or ffiutil.realpath(DataStorage:getDataDir())
     self.font_face = self.settings:readSetting("font_face") or self.normal_font
-    self.font_size = self.settings:readSetting("font_size") or 20 -- x_smallinfofont default size
+    self.font_size = self.settings:readSetting("font_size") or self.default_font_size
     -- The font settings could be saved in G_reader_setting if we want them
     -- to be re-used by default by InputDialog (on certain conditaions,
     -- when fullscreen or condensed or add_nav_bar...)
     --
     -- Allow users to set their prefered font manually in text_editor.lua
     -- (sadly, not via TextEditor itself, as they would be overriden on close)
-    if self.settings:readSetting("normal_font") then
+    if self.settings:has("normal_font") then
         self.normal_font = self.settings:readSetting("normal_font")
     end
-    if self.settings:readSetting("monospace_font") then
+    if self.settings:has("monospace_font") then
         self.monospace_font = self.settings:readSetting("monospace_font")
     end
-    self.auto_para_direction = self.settings:readSetting("auto_para_direction") or true
-    self.force_ltr_para_direction = self.settings:readSetting("force_ltr_para_direction") or false
-    self.qr_code_export = self.settings:readSetting("qr_code_export") or true
+    self.auto_para_direction = self.settings:nilOrTrue("auto_para_direction")
+    self.force_ltr_para_direction = self.settings:isTrue("force_ltr_para_direction")
+    self.qr_code_export = self.settings:nilOrTrue("qr_code_export")
+    self.show_keyboard_on_start = self.settings:nilOrTrue("show_keyboard_on_start")
 end
 
 function TextEditor:onFlushSettings()
@@ -77,6 +80,7 @@ function TextEditor:onFlushSettings()
         self.settings:saveSetting("auto_para_direction", self.auto_para_direction)
         self.settings:saveSetting("force_ltr_para_direction", self.force_ltr_para_direction)
         self.settings:saveSetting("qr_code_export", self.qr_code_export)
+        self.settings:saveSetting("show_keyboard_on_start", self.show_keyboard_on_start)
         self.settings:flush()
     end
 end
@@ -95,10 +99,10 @@ function TextEditor:getSubMenuItems()
     self.whenDoneFunc = nil -- discard reference to previous TouchMenu instance
     local sub_item_table = {
         {
-            text = _("Text editor settings"),
+            text = _("Settings"),
             sub_item_table = {
                 {
-                    text = _("Set text font size"),
+                    text = _("Text font size"),
                     keep_menu_open = true,
                     callback = function()
                         local SpinWidget = require("ui/widget/spinwidget")
@@ -108,8 +112,8 @@ function TextEditor:getSubMenuItems()
                             value = font_size,
                             value_min = 8,
                             value_max = 26,
-                            ok_text = _("Set font size"),
-                            title_text =  _("Select font size"),
+                            default_value = self.default_font_size,
+                            title_text =  _("Text font size"),
                             callback = function(spin)
                                 self.font_size = spin.value
                             end,
@@ -154,6 +158,16 @@ Enable this if you are mostly editing code, HTML, CSS…]]),
                     callback = function()
                         self.force_ltr_para_direction = not self.force_ltr_para_direction
                     end,
+                    separator = true,
+                },
+                {
+                    text = _("Show keyboard on start"),
+                    checked_func = function()
+                        return self.show_keyboard_on_start
+                    end,
+                    callback = function()
+                        self.show_keyboard_on_start = not self.show_keyboard_on_start
+                    end,
                 },
                 {
                     text = _("Enable QR code export"),
@@ -170,19 +184,19 @@ Export text to QR code, that can be scanned, for example, by a phone.]]),
             separator = true,
         },
         {
-            text = _("Select a file to open"),
-            keep_menu_open = true,
-            callback = function(touchmenu_instance)
-                self:setupWhenDoneFunc(touchmenu_instance)
-                self:chooseFile()
-            end,
-        },
-        {
-            text = _("Edit a new empty file"),
+            text = _("New file"),
             keep_menu_open = true,
             callback = function(touchmenu_instance)
                 self:setupWhenDoneFunc(touchmenu_instance)
                 self:newFile()
+            end,
+        },
+        {
+            text = _("Open file"),
+            keep_menu_open = true,
+            callback = function(touchmenu_instance)
+                self:setupWhenDoneFunc(touchmenu_instance)
+                self:chooseFile()
             end,
             separator = true,
         },
@@ -254,7 +268,7 @@ function TextEditor:execWhenDoneFunc()
 end
 
 function TextEditor:removeFromHistory(file_path)
-    for i=#self.history, 1, -1 do
+    for i = #self.history, 1, -1 do
         if self.history[i] == file_path then
             table.remove(self.history, i)
         end
@@ -464,7 +478,7 @@ function TextEditor:editFile(file_path, readonly)
     local buttons_first_row = {}  -- First button on first row, that will be filled with Reset|Save|Close
     if is_lua then
         table.insert(buttons_first_row, {
-            text = _("Check Lua"),
+            text = _("Lua check"),
             callback = function()
                 local parse_error = util.checkLuaSyntax(input:getInputText())
                 if parse_error then
@@ -474,7 +488,6 @@ function TextEditor:editFile(file_path, readonly)
                 else
                     UIManager:show(Notification:new{
                         text = T(_("Lua syntax OK")),
-                        timeout = 2,
                     })
                 end
             end,
@@ -504,6 +517,7 @@ function TextEditor:editFile(file_path, readonly)
         cursor_at_end = false,
         readonly = readonly,
         add_nav_bar = true,
+        keyboard_hidden = not self.show_keyboard_on_start,
         scroll_by_pan = true,
         buttons = {buttons_first_row},
         -- Set/save view and cursor position callback

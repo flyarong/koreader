@@ -37,6 +37,9 @@ local SpinWidget = InputContainer:new{
     value_hold_step = 4,
     cancel_text = _("Close"),
     ok_text = _("Apply"),
+    cancel_callback = nil,
+    callback = nil,
+    close_callback = nil,
     keep_shown_on_apply = false,
     -- Set this to add default button that restores number to its default value
     default_value = nil,
@@ -69,15 +72,12 @@ function SpinWidget:init()
             },
          }
     end
+
+    -- Actually the widget layout
     self:update()
 end
 
 function SpinWidget:update()
-    -- This picker_update_callback will be redefined later. It is needed
-    -- so we can have our MovableContainer repainted on NumberPickerWidgets
-    -- update. It is needed if we have enabled transparency on MovableContainer,
-    -- otherwise the NumberPicker area gets opaque on update.
-    local picker_update_callback = function() end
     local value_widget = NumberPickerWidget:new{
         show_parent = self,
         width = math.floor(self.screen_width * 0.2),
@@ -89,7 +89,6 @@ function SpinWidget:update()
         value_step = self.value_step,
         value_hold_step = self.value_hold_step,
         precision = self.precision,
-        update_callback = function() picker_update_callback() end,
     }
     local value_group = HorizontalGroup:new{
         align = "center",
@@ -130,8 +129,7 @@ function SpinWidget:update()
                 text = self.cancel_text,
                 callback = function()
                     if self.cancel_callback then
-                        self.value = value_widget:getValue()
-                        self:cancel_callback(self)
+                        self.cancel_callback()
                     end
                     self:onClose()
                 end,
@@ -141,7 +139,7 @@ function SpinWidget:update()
                 callback = function()
                     if self.callback then
                         self.value, self.value_index = value_widget:getValue()
-                        self:callback(self)
+                        self.callback(self)
                     end
                     if not self.keep_shown_on_apply then
                         self:onClose()
@@ -239,11 +237,6 @@ function SpinWidget:update()
     UIManager:setDirty(self, function()
         return "ui", self.spin_frame.dimen
     end)
-    picker_update_callback = function()
-        UIManager:setDirty("all", function()
-            return "ui", self.movable.dimen
-        end)
-    end
 end
 
 function SpinWidget:hasMoved()
@@ -253,7 +246,7 @@ end
 
 function SpinWidget:onCloseWidget()
     UIManager:setDirty(nil, function()
-        return "partial", self.spin_frame.dimen
+        return "ui", self.spin_frame.dimen
     end)
     return true
 end
@@ -266,7 +259,7 @@ function SpinWidget:onShow()
 end
 
 function SpinWidget:onAnyKeyPressed()
-    UIManager:close(self)
+    self:onClose()
     return true
 end
 
@@ -279,6 +272,9 @@ end
 
 function SpinWidget:onClose()
     UIManager:close(self)
+    if self.close_callback then
+        self.close_callback()
+    end
     return true
 end
 

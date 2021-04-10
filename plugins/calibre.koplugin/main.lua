@@ -59,7 +59,7 @@ function Calibre:closeWirelessConnection()
 end
 
 function Calibre:onDispatcherRegisterActions()
-    Dispatcher:registerAction("calibre_search", { category="none", event="CalibreSearch", title=_("Search in calibre metadata"), device=true,})
+    Dispatcher:registerAction("calibre_search", { category="none", event="CalibreSearch", title=_("Calibre metadata search"), device=true,})
     Dispatcher:registerAction("calibre_browse_tags", { category="none", event="CalibreBrowseTags", title=_("Browse all calibre tags"), device=true,})
     Dispatcher:registerAction("calibre_browse_series", { category="none", event="CalibreBrowseSeries", title=_("Browse all calibre series"), device=true, separator=true,})
 end
@@ -109,7 +109,7 @@ function Calibre:addToMainMenu(menu_items)
     -- insert the metadata search
     if G_reader_settings:isTrue("calibre_search_from_reader") or not self.ui.view then
         menu_items.find_book_in_calibre_catalog = {
-            text = _("Find a book via calibre metadata"),
+            text = _("Calibre metadata search"),
             callback = function()
                 CalibreSearch:ShowSearch()
             end
@@ -127,16 +127,16 @@ function Calibre:getSearchMenuTable()
             sub_item_table_func = function()
                 local result = {}
                 -- append previous scanned dirs to the list.
-                local cache = LuaSettings:open(CalibreSearch.user_libraries)
+                local cache = LuaSettings:open(CalibreSearch.cache_libs.path)
                 for path, _ in pairs(cache.data) do
                     table.insert(result, {
                         text = path,
                         keep_menu_open = true,
                         checked_func = function()
-                            return cache:readSetting(path)
+                            return cache:isTrue(path)
                         end,
                         callback = function()
-                            cache:saveSetting(path, not cache:readSetting(path))
+                            cache:toggle(path)
                             cache:flush()
                             CalibreSearch:invalidateCache()
                         end,
@@ -165,8 +165,7 @@ function Calibre:getSearchMenuTable()
                 return G_reader_settings:isTrue("calibre_search_from_reader")
             end,
             callback = function()
-                local current = G_reader_settings:isTrue("calibre_search_from_reader")
-                G_reader_settings:saveSetting("calibre_search_from_reader", not current)
+                G_reader_settings:toggle("calibre_search_from_reader")
                 UIManager:show(InfoMessage:new{
                     text = _("This will take effect on next restart."),
                 })
@@ -248,7 +247,7 @@ function Calibre:getWirelessMenuTable()
             end,
         },
         {
-            text = _("Set inbox directory"),
+            text = _("Set inbox folder"),
             enabled_func = isEnabled,
             callback = function()
                 CalibreWireless:setInboxDir()

@@ -106,9 +106,9 @@ function KindlePowerD:getCapacityHW()
     else
         local std_out = io.popen("gasgauge-info -c 2>/dev/null", "r")
         if std_out then
-            local result = std_out:read("*all"):match("%d+")
+            local result = std_out:read("*number")
             std_out:close()
-            return result and tonumber(result) or 0
+            return result or 0
         else
             return 0
         end
@@ -123,13 +123,6 @@ function KindlePowerD:isChargingHW()
         is_charging = self:read_int_file(self.is_charging_file)
     end
     return is_charging == 1
-end
-
-function KindlePowerD:__gc()
-    if self.lipc_handle then
-        self.lipc_handle:close()
-        self.lipc_handle = nil
-    end
 end
 
 function KindlePowerD:_readFLIntensity()
@@ -158,6 +151,14 @@ function KindlePowerD:toggleSuspend()
         self.lipc_handle:set_int_property("com.lab126.powerd", "powerButton", 1)
     else
         os.execute("powerd_test -p")
+    end
+end
+
+--- @fixme: This won't ever fire, as KindlePowerD is already a metatable on a plain table.
+function KindlePowerD:__gc()
+    if self.lipc_handle then
+        self.lipc_handle:close()
+        self.lipc_handle = nil
     end
 end
 

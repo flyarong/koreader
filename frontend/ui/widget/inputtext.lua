@@ -58,6 +58,7 @@ local InputText = InputContainer:new{
     is_password_type = false, -- set to true if original text_type == "password"
     is_text_editable = true, -- whether text is utf8 reversible and editing won't mess content
     is_text_edited = false, -- whether text has been updated
+    for_measurement_only = nil, -- When the widget is a one-off used to compute text height
 }
 
 -- only use PhysicalKeyboard if the device does not have touch screen
@@ -119,6 +120,7 @@ if Device:isTouchDevice() or Device:hasDPad() then
             if self.parent.onSwitchFocus then
                 self.parent:onSwitchFocus(self)
             end
+            if #self.charlist == 0 then return end -- Avoid cursor moving within a hint.
             local textwidget_offset = self.margin + self.bordersize + self.padding
             local x = ges.pos.x - self._frame_textwidget.dimen.x - textwidget_offset
             local y = ges.pos.y - self._frame_textwidget.dimen.y - textwidget_offset
@@ -205,7 +207,6 @@ function InputText:isTextEditable(show_warning)
     if show_warning and not self.is_text_editable then
         UIManager:show(Notification:new{
             text = _("Text may be binary content, and is not editable"),
-            timeout = 2
         })
     end
     return self.is_text_editable
@@ -319,6 +320,7 @@ function InputText:initTextBox(text, char_added)
             lang = self.lang, -- these might influence height
             para_direction_rtl = self.para_direction_rtl,
             auto_para_direction = self.auto_para_direction,
+            for_measurement_only = true, -- flag it as a dummy, so it won't trigger any bogus repaint/refresh...
         }
         self.height = text_widget:getTextHeight()
         self.scroll = true
@@ -344,6 +346,7 @@ function InputText:initTextBox(text, char_added)
             dialog = self.parent,
             scroll_callback = self.scroll_callback,
             scroll_by_pan = self.scroll_by_pan,
+            for_measurement_only = self.for_measurement_only,
         }
     else
         self.text_widget = TextBoxWidget:new{
@@ -363,6 +366,7 @@ function InputText:initTextBox(text, char_added)
             width = self.width,
             height = self.height,
             dialog = self.parent,
+            for_measurement_only = self.for_measurement_only,
         }
     end
     -- Get back possibly modified charpos and virtual_line_num
@@ -389,9 +393,12 @@ function InputText:initTextBox(text, char_added)
     self[1] = self._frame
     self.dimen = self._frame:getSize()
     --- @fixme self.parent is not always in the widget stack (BookStatusWidget)
-    UIManager:setDirty(self.parent, function()
-        return "ui", self.dimen
-    end)
+    -- Don't even try to refresh dummy widgets used for text height computations...
+    if not self.for_measurement_only then
+        UIManager:setDirty(self.parent, function()
+            return "ui", self.dimen
+        end)
+    end
     if self.edit_callback then
         self.edit_callback(self.is_text_edited)
     end
@@ -422,7 +429,46 @@ function InputText:focus()
     self._frame_textwidget.color = Blitbuffer.COLOR_BLACK
 end
 
+-- Handle real keypresses from a physical keyboard, even if the virtual keyboard
+-- is shown. Mostly likely to be in the emulator, but could be Android + BT
+-- keyboard, or a "coder's keyboard" Android input method.
+function InputText:onKeyPress(key)
+    if key["Backspace"] then
+        self:delChar()
+    elseif key["Del"] then
+        self:rightChar()
+        self:delChar()
+    elseif key["Left"] then
+        self:leftChar()
+    elseif key["Right"] then
+        self:rightChar()
+    elseif key["End"] then
+        self:goToEnd()
+    elseif key["Home"] then
+        self:goToHome()
+    elseif key["Ctrl"] and not key["Shift"] and not key["Alt"] then
+        if key["U"] then
+            self:delToStartOfLine()
+        elseif key["H"] then
+            self:delChar()
+        end
+    else
+        return false
+    end
+
+    return true
+end
+
+-- Handle text coming directly as text from the Device layer (eg. soft keyboard
+-- or via SDL's keyboard mapping).
+function InputText:onTextInput(text)
+    self:addChars(text)
+    return true
+end
+
 function InputText:onShowKeyboard(ignore_first_hold_release)
+    Device:startTextInput()
+
     self.keyboard.ignore_first_hold_release = ignore_first_hold_release
     UIManager:show(self.keyboard)
     return true
@@ -430,6 +476,7 @@ end
 
 function InputText:onCloseKeyboard()
     UIManager:close(self.keyboard)
+    Device:stopTextInput()
 end
 
 function InputText:onCloseWidget()
@@ -521,6 +568,14 @@ function InputText:rightChar()
     if self.charpos > #self.charlist then return end
     self.text_widget:moveCursorRight()
     self.charpos, self.top_line_num = self.text_widget:getCharPos()
+end
+
+function InputText:goToHome()
+    self.text_widget:moveCursorToCharPos(1)
+end
+
+function InputText:goToEnd()
+    self.text_widget:moveCursorToCharPos(0)
 end
 
 function InputText:upLine()

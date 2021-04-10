@@ -1,6 +1,8 @@
 local BD = require("ui/bidi")
 local ButtonDialog = require("ui/widget/buttondialog")
 local InputContainer = require("ui/widget/container/inputcontainer")
+local InputDialog = require("ui/widget/inputdialog")
+local Notification = require("ui/widget/notification")
 local UIManager = require("ui/uimanager")
 local logger = require("logger")
 local _ = require("gettext")
@@ -34,35 +36,39 @@ function ReaderSearch:onShowFulltextSearchInput()
     if BD.mirroredUILayout() then
         backward_text, forward_text = forward_text, backward_text
     end
-    self:onInput{
+
+    self.input_dialog = InputDialog:new{
         title = _("Enter text to search for"),
-        type = "text",
         buttons = {
             {
                 {
                     text = _("Cancel"),
                     callback = function()
-                        self:closeInputDialog()
+                        UIManager:close(self.input_dialog)
                     end,
                 },
                 {
                     text = backward_text,
                     callback = function()
+                        if self.input_dialog:getInputText() == "" then return end
+                        UIManager:close(self.input_dialog)
                         self:onShowSearchDialog(self.input_dialog:getInputText(), 1)
-                        self:closeInputDialog()
                     end,
                 },
                 {
                     text = forward_text,
                     is_enter_default = true,
                     callback = function()
+                        if self.input_dialog:getInputText() == "" then return end
+                        UIManager:close(self.input_dialog)
                         self:onShowSearchDialog(self.input_dialog:getInputText(), 0)
-                        self:closeInputDialog()
                     end,
                 },
             },
         },
     }
+    UIManager:show(self.input_dialog)
+    self.input_dialog:onShowKeyboard()
 end
 
 function ReaderSearch:onShowSearchDialog(text, direction)
@@ -70,9 +76,11 @@ function ReaderSearch:onShowSearchDialog(text, direction)
     local current_page
     local do_search = function(search_func, _text, param)
         return function()
+            local no_results = true -- for notification
             local res = search_func(self, _text, param)
             if res then
                 if self.ui.document.info.has_pages then
+                    no_results = false
                     self.ui.link:onGotoLink({page = res.page - 1}, neglect_current_location)
                     self.view.highlight.temp[res.page] = res
                 else
@@ -136,11 +144,23 @@ function ReaderSearch:onShowSearchDialog(text, direction)
                         end
                     end
                     if valid_link then
+                        no_results = false
                         self.ui.link:onGotoLink({xpointer=valid_link}, neglect_current_location)
                     end
                 end
                 -- Don't add result pages to location ("Go back") stack
                 neglect_current_location = true
+            end
+            if no_results then
+                local notification_text
+                if self._expect_back_results then
+                    notification_text = _("No results on preceding pages")
+                else
+                    notification_text = _("No results on following pages")
+                end
+                UIManager:show(Notification:new{
+                    text = notification_text,
+                })
             end
         end
     end
@@ -159,18 +179,22 @@ function ReaderSearch:onShowSearchDialog(text, direction)
             {
                 {
                     text = from_start_text,
+                    vsync = true,
                     callback = do_search(self.searchFromStart, text),
                 },
                 {
                     text = backward_text,
+                    vsync = true,
                     callback = do_search(self.searchNext, text, 1),
                 },
                 {
                     text = forward_text,
+                    vsync = true,
                     callback = do_search(self.searchNext, text, 0),
                 },
                 {
                     text = from_end_text,
+                    vsync = true,
                     callback = do_search(self.searchFromEnd, text),
                 },
             }
@@ -190,7 +214,6 @@ end
 
 function ReaderSearch:search(pattern, origin)
     logger.dbg("search pattern", pattern)
-    if pattern == nil or pattern == '' then return end
     local direction = self.direction
     local case = self.case_insensitive
     local page = self.view.state.page

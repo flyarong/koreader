@@ -41,6 +41,9 @@ local DoubleSpinWidget = InputContainer:new{
     right_text = _("Right"),
     cancel_text = _("Close"),
     ok_text = _("Apply"),
+    cancel_callback = nil,
+    callback = nil,
+    close_callback = nil,
     keep_shown_on_apply = false,
     -- Set this to add default button that restores numbers to their default values
     default_values = nil,
@@ -74,15 +77,12 @@ function DoubleSpinWidget:init()
             },
         }
     end
+
+    -- Actually the widget layout
     self:update()
 end
 
 function DoubleSpinWidget:update()
-    -- This picker_update_callback will be redefined later. It is needed
-    -- so we can have our MovableContainer repainted on NumberPickerWidgets
-    -- update. It is needed if we have enabled transparency on MovableContainer,
-    -- otherwise the NumberPicker area gets opaque on update.
-    local picker_update_callback = function() end
     local left_widget = NumberPickerWidget:new{
         show_parent = self,
         width = self.picker_width,
@@ -92,7 +92,6 @@ function DoubleSpinWidget:update()
         value_step = self.left_step,
         value_hold_step = self.left_hold_step,
         wrap = false,
-        update_callback = function() picker_update_callback() end,
     }
     local right_widget = NumberPickerWidget:new{
         show_parent = self,
@@ -103,7 +102,6 @@ function DoubleSpinWidget:update()
         value_step = self.right_step,
         value_hold_step = self.right_hold_step,
         wrap = false,
-        update_callback = function() picker_update_callback() end,
     }
     local left_vertical_group = VerticalGroup:new{
         align = "center",
@@ -167,21 +165,29 @@ function DoubleSpinWidget:update()
         widget_title,
         CloseButton:new{ window = self, padding_top = Size.margin.title, },
     }
-    local widget_info = FrameContainer:new{
-        padding = Size.padding.default,
-        margin = Size.margin.small,
-        bordersize = 0,
-        TextBoxWidget:new{
-            text = self.info_text or "",
-            face = Font:getFace("x_smallinfofont"),
-            width = math.floor(self.width * 0.9),
+    local widget_info
+    if self.info_text then
+        widget_info = FrameContainer:new{
+            padding = Size.padding.default,
+            margin = Size.margin.small,
+            bordersize = 0,
+            TextBoxWidget:new{
+                text = self.info_text,
+                face = Font:getFace("x_smallinfofont"),
+                width = math.floor(self.width * 0.9),
+            }
         }
-    }
+    else
+        widget_info = VerticalSpan:new{ width = 0 }
+    end
     local buttons = {
         {
             {
                 text = self.cancel_text,
                 callback = function()
+                    if self.cancel_callback then
+                        self.cancel_callback()
+                    end
                     self:onClose()
                 end,
             },
@@ -278,13 +284,6 @@ function DoubleSpinWidget:update()
     UIManager:setDirty(self, function()
         return "ui", self.widget_frame.dimen
     end)
-    picker_update_callback = function()
-        UIManager:setDirty("all", function()
-            return "ui", self.movable.dimen
-        end)
-        -- If we'd like to have the values auto-applied, uncomment this:
-        -- self.callback(left_widget:getValue(), right_widget:getValue())
-    end
 end
 
 function DoubleSpinWidget:hasMoved()
@@ -294,7 +293,7 @@ end
 
 function DoubleSpinWidget:onCloseWidget()
     UIManager:setDirty(nil, function()
-        return "partial", self.widget_frame.dimen
+        return "ui", self.widget_frame.dimen
     end)
     return true
 end
@@ -307,7 +306,7 @@ function DoubleSpinWidget:onShow()
 end
 
 function DoubleSpinWidget:onAnyKeyPressed()
-    UIManager:close(self)
+    self:onClose()
     return true
 end
 
@@ -320,6 +319,9 @@ end
 
 function DoubleSpinWidget:onClose()
     UIManager:close(self)
+    if self.close_callback then
+        self.close_callback()
+    end
     return true
 end
 

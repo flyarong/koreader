@@ -96,8 +96,12 @@ function ReaderFont:init()
             end,
             checked_func = function()
                 return v == self.font_face
-            end
+            end,
+            menu_item_id = v,
         })
+    end
+    self.face_table.open_on_menu_item_id_func = function()
+        return self.font_face
     end
     self.ui.menu:registerToMainMenu(self)
 end
@@ -108,48 +112,55 @@ end
 
 function ReaderFont:onReadSettings(config)
     self.font_face = config:readSetting("font_face")
-            or G_reader_settings:readSetting("cre_font")
-            or self.ui.document.default_font
+                  or G_reader_settings:readSetting("cre_font")
+                  or self.ui.document.default_font
     self.ui.document:setFontFace(self.font_face)
 
     self.header_font_face = config:readSetting("header_font_face")
-            or G_reader_settings:readSetting("header_font")
-            or self.ui.document.header_font
+                         or G_reader_settings:readSetting("header_font")
+                         or self.ui.document.header_font
     self.ui.document:setHeaderFont(self.header_font_face)
 
     self.font_size = config:readSetting("font_size")
-            or G_reader_settings:readSetting("copt_font_size")
-            or DCREREADER_CONFIG_DEFAULT_FONT_SIZE or 22
+                  or G_reader_settings:readSetting("copt_font_size")
+                  or DCREREADER_CONFIG_DEFAULT_FONT_SIZE
+                  or 22
     self.ui.document:setFontSize(Screen:scaleBySize(self.font_size))
 
     self.font_embolden = config:readSetting("font_embolden")
-            or G_reader_settings:readSetting("copt_font_weight") or 0
+                      or G_reader_settings:readSetting("copt_font_weight")
+                      or 0
     self.ui.document:toggleFontBolder(self.font_embolden)
 
     self.font_hinting = config:readSetting("font_hinting")
-            or G_reader_settings:readSetting("copt_font_hinting") or 2 -- auto (default in cre.cpp)
+                     or G_reader_settings:readSetting("copt_font_hinting")
+                     or 2 -- auto (default in cre.cpp)
     self.ui.document:setFontHinting(self.font_hinting)
 
     self.font_kerning = config:readSetting("font_kerning")
-            or G_reader_settings:readSetting("copt_font_kerning") or 3 -- harfbuzz (slower, but needed for proper arabic)
+                     or G_reader_settings:readSetting("copt_font_kerning")
+                     or 3 -- harfbuzz (slower, but needed for proper arabic)
     self.ui.document:setFontKerning(self.font_kerning)
 
     self.word_spacing = config:readSetting("word_spacing")
-        or G_reader_settings:readSetting("copt_word_spacing") or {95, 75}
+                     or G_reader_settings:readSetting("copt_word_spacing")
+                     or {95, 75}
     self.ui.document:setWordSpacing(self.word_spacing)
 
     self.word_expansion = config:readSetting("word_expansion")
-        or G_reader_settings:readSetting("copt_word_expansion") or 0
+                       or G_reader_settings:readSetting("copt_word_expansion")
+                       or 0
     self.ui.document:setWordExpansion(self.word_expansion)
 
     self.line_space_percent = config:readSetting("line_space_percent")
-            or G_reader_settings:readSetting("copt_line_spacing")
-            or DCREREADER_CONFIG_LINE_SPACE_PERCENT_MEDIUM
+                           or G_reader_settings:readSetting("copt_line_spacing")
+                           or DCREREADER_CONFIG_LINE_SPACE_PERCENT_MEDIUM
     self.ui.document:setInterlineSpacePercent(self.line_space_percent)
 
     self.gamma_index = config:readSetting("gamma_index")
-            or G_reader_settings:readSetting("copt_font_gamma")
-            or DCREREADER_CONFIG_DEFAULT_FONT_GAMMA or 15 -- gamma = 1.0
+                    or G_reader_settings:readSetting("copt_font_gamma")
+                    or DCREREADER_CONFIG_DEFAULT_FONT_GAMMA
+                    or 15 -- gamma = 1.0
     self.ui.document:setGammaIndex(self.gamma_index)
 
     -- Dirty hack: we have to add following call in order to set
@@ -169,12 +180,13 @@ function ReaderFont:onShowFontMenu()
         width = Screen:getWidth() - 100,
         height = math.floor(Screen:getHeight() * 0.5),
         single_line = true,
-        perpage_custom = 8,
+        items_per_page = 8,
+        items_font_size = Menu.getItemFontSize(8),
     }
     -- build container
     local menu_container = CenterContainer:new{
-        main_menu,
         dimen = Screen:getSize(),
+        main_menu,
     }
     main_menu.close_callback = function ()
         UIManager:close(menu_container)
@@ -211,7 +223,6 @@ function ReaderFont:onSetFontSize(new_size)
     self.ui:handleEvent(Event:new("UpdatePos"))
     UIManager:show(Notification:new{
         text = T( _("Font size set to %1."), self.font_size),
-        timeout = 2,
     })
 
     return true
@@ -221,7 +232,6 @@ function ReaderFont:onSetLineSpace(space)
     self.line_space_percent = math.min(200, math.max(50, space))
     UIManager:show(Notification:new{
         text = T( _("Line spacing set to %1%."), self.line_space_percent),
-        timeout = 2,
     })
     self.ui.document:setInterlineSpacePercent(self.line_space_percent)
     self.ui:handleEvent(Event:new("UpdatePos"))
@@ -269,7 +279,6 @@ function ReaderFont:onSetFontGamma(gamma)
     local gamma_level = self.ui.document:getGammaLevel()
     UIManager:show(Notification:new{
         text = T( _("Font gamma set to %1."), gamma_level),
-        timeout = 2,
     })
     self.ui:handleEvent(Event:new("RedrawCurrentView"))
     return true
@@ -293,7 +302,6 @@ function ReaderFont:setFont(face)
         self.font_face = face
         UIManager:show(Notification:new{
             text = T( _("Redrawing with font %1."), face),
-            timeout = 2,
         })
 
         self.ui.document:setFontFace(face)
@@ -328,7 +336,9 @@ function ReaderFont:addToMainMenu(menu_items)
     self.face_table.max_per_page = 5
     -- insert table to main reader menu
     menu_items.change_font = {
-        text = self.font_menu_title,
+        text_func = function()
+            return T(_("Font: %1"), BD.wrap(self.font_face))
+        end,
         sub_item_table = self.face_table,
     }
 end
@@ -442,8 +452,8 @@ function ReaderFont:buildFontsTestDocument()
         f:close()
     end
     local dir = G_reader_settings:readSetting("home_dir")
-    if not dir then dir = require("apps/filemanager/filemanagerutil").getDefaultDir() end
-    if not dir then dir = "." end
+             or require("apps/filemanager/filemanagerutil").getDefaultDir()
+             or "."
     local font_test_final_path = dir .. "/" .. FONT_TEST_FINAL_FILENAME
     f = io.open(font_test_final_path, "w")
     if not f then return end

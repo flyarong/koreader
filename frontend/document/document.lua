@@ -188,6 +188,48 @@ function Document:getPageCount()
     return self.info.number_of_pages
 end
 
+-- Some functions that look quite silly, but they can be
+-- overridden for document types that support separate flows
+-- (e.g. CreDocument)
+function Document:hasNonLinearFlows()
+    return false
+end
+
+function Document:hasHiddenFlows()
+    return false
+end
+
+function Document:getNextPage(page)
+    local new_page = page + 1
+    return (new_page > 0 and new_page < self.info.number_of_pages) and new_page or 0
+end
+
+function Document:getPrevPage(page)
+    if page == 0 then return self.info.number_of_pages end
+    local new_page = page - 1
+    return (new_page > 0 and new_page < self.info.number_of_pages) and new_page or 0
+end
+
+function Document:getTotalPagesLeft(page)
+    return self.info.number_of_pages - page
+end
+
+function Document:getPageFlow(page)
+    return 0
+end
+
+function Document:getFirstPageInFlow(flow)
+    return 1
+end
+
+function Document:getTotalPagesInFlow(flow)
+    return self.info.number_of_pages
+end
+
+function Document:getPageNumberInFlow(page)
+    return page
+end
+
 -- calculates page dimensions
 function Document:getPageDimensions(pageno, zoom, rotation)
     local native_dimen = self:getNativePageDimensions(pageno):copy()
@@ -231,10 +273,10 @@ function Document:getUsedBBoxDimensions(pageno, zoom, rotation)
     -- clipping page bbox
     if bbox.x0 < 0 then bbox.x0 = 0 end
     if bbox.y0 < 0 then bbox.y0 = 0 end
-    if bbox.x1 < 0 then bbox.x1 = 0 end
-    if bbox.y1 < 0 then bbox.y1 = 0 end
+    if bbox.x1 and bbox.x1 < 0 then bbox.x1 = 0 end
+    if bbox.y1 and bbox.y1 < 0 then bbox.y1 = 0 end
     local ubbox_dimen
-    if (bbox.x0 >= bbox.x1) or (bbox.y0 >= bbox.y1) then
+    if (not bbox.x1 or bbox.x0 >= bbox.x1) or (not bbox.y1 or bbox.y0 >= bbox.y1) then
         -- if document's bbox info is corrupted, we use the page size
         ubbox_dimen = self:getPageDimensions(pageno, zoom, rotation)
     else
@@ -438,6 +480,14 @@ function Document:getPageText(pageno)
 end
 
 function Document:saveHighlight(pageno, item)
+    return nil
+end
+
+function Document:deleteHighlight(pageno, item)
+    return nil
+end
+
+function Document:updateHighlightContents(pageno, item, contents)
     return nil
 end
 

@@ -15,6 +15,7 @@ local SonyPRSTUX = Generic:new{
     canReboot = yes,
     canPowerOff = yes,
     usbPluggedIn = false,
+    home_dir = nil,
 }
 
 
@@ -93,6 +94,7 @@ end
 function SonyPRSTUX:intoScreenSaver()
     local Screensaver = require("ui/screensaver")
     if self.screen_saver_mode == false then
+        Screensaver:setup()
         Screensaver:show()
     end
     self.powerd:beforeSuspend()
@@ -151,7 +153,7 @@ function SonyPRSTUX:initNetworkManager(NetworkMgr)
 
     function NetworkMgr:turnOnWifi(complete_callback)
        os.execute("./set-wifi.sh on")
-       self:showNetworkMenu(complete_callback)
+       self:reconnectOrShowNetworkMenu(complete_callback)
     end
 
     function NetworkMgr:getNetworkInterfaceName()

@@ -12,7 +12,7 @@ local T = require("ffi/util").template
 local DeviceListener = InputContainer:new{}
 
 local function _setSetting(name)
-    G_reader_settings:saveSetting(name, true)
+    G_reader_settings:makeTrue(name)
 end
 
 local function _unsetSetting(name)
@@ -26,6 +26,10 @@ end
 function DeviceListener:onToggleNightMode()
     local night_mode = G_reader_settings:isTrue("night_mode")
     Screen:toggleNightMode()
+    -- Make sure CRe will bypass the call cache
+    if self.ui and self.ui.document and self.ui.document.provider == "crengine" then
+        self.ui.document:resetCallCache()
+    end
     UIManager:setDirty("all", "full")
     UIManager:ToggleNightMode(not night_mode)
     G_reader_settings:saveSetting("night_mode", not night_mode)
@@ -49,7 +53,6 @@ function DeviceListener:onShowIntensity()
     end
     UIManager:show(Notification:new{
         text = new_text,
-        timeout = 1,
     })
     return true
 end
@@ -61,7 +64,6 @@ function DeviceListener:onShowWarmth(value)
         -- powerd.fl_warmth_max is the maximum value the hardware accepts
         UIManager:show(Notification:new{
             text = T(_("Warmth set to %1."), math.floor(powerd.fl_warmth/100*powerd.fl_warmth_max)),
-            timeout = 1.0,
         })
     end
     return true
@@ -81,7 +83,7 @@ if Device:hasFrontlight() then
             local steps_fl_big_scale = { 0.1, 0.1, 0.2, 0.4, 0.7, 1.1, 1.6, 2.2, 2.9, 3.7, 4.6, 5.6, 6.7, 7.9, 9.2, 10.6, }
             local steps_fl_small_scale = { 1.0, 1.0, 2.0, 3.0, 4.0, 6.0, 8.1, 11.3 }
             local steps_fl = steps_fl_big_scale
-            if (min - max) < 50  then
+            if (max - min) < 50  then
                 steps_fl = steps_fl_small_scale
             end
             local gestureScale
@@ -175,7 +177,6 @@ if Device:hasFrontlight() then
         if powerd.auto_warmth then
             UIManager:show(Notification:new{
                 text = _("Warmth is handled automatically."),
-                timeout = 1.0,
             })
             return true
         end
@@ -221,7 +222,6 @@ if Device:hasFrontlight() then
         end
         UIManager:show(Notification:new{
             text = new_text,
-            timeout = 1.0,
         })
         return true
     end
@@ -244,7 +244,6 @@ if Device:canToggleGSensor() then
         end
         UIManager:show(Notification:new{
             text = new_text,
-            timeout = 1.0,
         })
         return true
     end

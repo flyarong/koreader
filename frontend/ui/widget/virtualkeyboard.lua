@@ -16,6 +16,7 @@ local InputContainer = require("ui/widget/container/inputcontainer")
 local KeyboardLayoutDialog = require("ui/widget/keyboardlayoutdialog")
 local Size = require("ui/size")
 local TextWidget = require("ui/widget/textwidget")
+local TimeVal = require("ui/timeval")
 local UIManager = require("ui/uimanager")
 local VerticalGroup = require("ui/widget/verticalgroup")
 local VerticalSpan = require("ui/widget/verticalspan")
@@ -218,7 +219,7 @@ function VirtualKey:init()
     (self.keyboard.umlautmode_keys[self.label] ~= nil and self.keyboard.umlautmode) then
         self[1].background = Blitbuffer.COLOR_LIGHT_GRAY
     end
-    self.flash_keyboard = G_reader_settings:readSetting("flash_keyboard") ~= false
+    self.flash_keyboard = G_reader_settings:nilOrTrue("flash_keyboard")
 end
 
 function VirtualKey:genkeyboardLayoutKeyChars()
@@ -588,6 +589,7 @@ function VirtualKeyPopup:init()
         },
     }
     self.tap_interval_override = G_reader_settings:readSetting("ges_tap_interval_on_keyboard") or 0
+    self.tap_interval_override = TimeVal:new{ usec = self.tap_interval_override }
 
     if Device:hasDPad() then
         self.key_events.PressKey = { {"Press"}, doc = "select key" }
@@ -639,6 +641,7 @@ function VirtualKeyPopup:init()
 end
 
 local VirtualKeyboard = FocusManager:new{
+    name = "VirtualKeyboard",
     modal = true,
     disable_double_tap = true,
     inputbox = nil,
@@ -661,13 +664,16 @@ local VirtualKeyboard = FocusManager:new{
 
     lang_to_keyboard_layout = {
         ar_AA = "ar_AA_keyboard",
+        bg_BG = "bg_keyboard",
         de = "de_keyboard",
         el = "el_keyboard",
         en = "en_keyboard",
         es = "es_keyboard",
+        fa = "fa_keyboard",
         fr = "fr_keyboard",
         he = "he_keyboard",
         ja = "ja_keyboard",
+        ka = "ka_keyboard",
         pl = "pl_keyboard",
         pt_BR = "pt_keyboard",
         ro = "ro_keyboard",
@@ -695,6 +701,7 @@ function VirtualKeyboard:init()
     self.max_layer = keyboard.max_layer
     self:initLayer(self.keyboard_layer)
     self.tap_interval_override = G_reader_settings:readSetting("ges_tap_interval_on_keyboard") or 0
+    self.tap_interval_override = TimeVal:new{ usec = self.tap_interval_override }
     if Device:hasDPad() then
         self.key_events.PressKey = { {"Press"}, doc = "select key" }
     end

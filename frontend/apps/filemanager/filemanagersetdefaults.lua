@@ -8,6 +8,7 @@ local InputContainer = require("ui/widget/container/inputcontainer")
 local InputDialog = require("ui/widget/inputdialog")
 local Menu = require("ui/widget/menu")
 local MultiInputDialog = require("ui/widget/multiinputdialog")
+local Size = require("ui/size")
 local UIManager = require("ui/uimanager")
 local dump = require("dump")
 local isAndroid, android = pcall(require, "android")
@@ -85,14 +86,13 @@ function SetDefaults:init()
     -- opened immediately) we need to set the full screen dirty because
     -- otherwise only the input dialog part of the screen is refreshed.
     menu_container.onShow = function()
-        UIManager:setDirty(nil, "partial")
+        UIManager:setDirty(nil, "ui")
     end
 
     self.defaults_menu = Menu:new{
-        width = Screen:getWidth()-15,
-        height = Screen:getHeight()-15,
+        width = Screen:getWidth() - (Size.margin.fullscreen_popout * 2),
+        height = Screen:getHeight() - (Size.margin.fullscreen_popout * 2),
         cface = Font:getFace("smallinfofont"),
-        perpage = G_reader_settings:readSetting("items_per_page") or 14,
         show_parent = menu_container,
         _manager = self,
     }

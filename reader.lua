@@ -29,6 +29,15 @@ io.stdout:flush()
 -- they might call gettext on load
 G_reader_settings = require("luasettings"):open(
     DataStorage:getDataDir().."/settings.reader.lua")
+
+-- Apply the JIT opt tweaks ASAP when the C BB is disabled,
+-- because we want to avoid the jit.flush() from bb:enableCBB,
+-- which only makes the mcode allocation issues worse on Android...
+local is_cbb_enabled = G_reader_settings:nilOrFalse("dev_no_c_blitter")
+if not is_cbb_enabled then
+    jit.opt.start("loopunroll=45")
+end
+
 local lang_locale = G_reader_settings:readSetting("language")
 -- Allow quick switching to Arabic for testing RTL/UI mirroring
 if os.getenv("KO_RTL") then lang_locale = "ar_AA" end
@@ -37,11 +46,10 @@ if lang_locale then
     _.changeLang(lang_locale)
 end
 
-local dummy = require("ffi/posix_h")
-
 -- Try to turn the C blitter on/off, and synchronize setting so that UI config reflects real state
 local bb = require("ffi/blitbuffer")
-local is_cbb_enabled = bb:enableCBB(G_reader_settings:nilOrFalse("dev_no_c_blitter"))
+bb:setUseCBB(is_cbb_enabled)
+is_cbb_enabled = bb:enableCBB(G_reader_settings:nilOrFalse("dev_no_c_blitter"))
 G_reader_settings:saveSetting("dev_no_c_blitter", not is_cbb_enabled)
 
 -- Should check DEBUG option in arg and turn on DEBUG before loading other
@@ -53,6 +61,7 @@ if G_reader_settings:isTrue("debug") and G_reader_settings:isTrue("debug_verbose
 -- Option parsing:
 local longopts = {
     debug = "d",
+    verbose = "d",
     profile = "p",
     help = "h",
 }
@@ -69,12 +78,31 @@ local function showusage()
     print("If you give the name of a directory instead of a file path, a file")
     print("chooser will show up and let you select a file")
     print("")
-    print("If you don't pass any path, the last viewed document will be opened")
+    print("If you don't pass any path, the File Manager will be opened")
     print("")
     print("This software is licensed under the AGPLv3.")
     print("See http://github.com/koreader/koreader for more info.")
 end
 
+local function getPathFromURI(str)
+    local hexToChar = function(x)
+        return string.char(tonumber(x, 16))
+    end
+
+    local unescape = function(url)
+       return url:gsub("%%(%x%x)", hexToChar)
+    end
+
+    local prefix = "file://"
+    if str:sub(1, #prefix) ~= prefix then
+        return str
+    end
+    return unescape(str):sub(#prefix+1)
+end
+
+local lfs = require("libs/libkoreader-lfs")
+local file
+local directory
 local Profiler = nil
 local ARGV = arg
 local argidx = 1
@@ -98,8 +126,14 @@ while argidx <= #ARGV do
         Profiler = require("jit.p")
         Profiler.start("la")
     else
-        -- not a recognized option, should be a filename
-        argidx = argidx - 1
+        -- not a recognized option, should be a filename or directory
+        local sanitized_path = getPathFromURI(arg)
+        local mode = lfs.attributes(sanitized_path, "mode")
+        if mode == "file" then
+            file = sanitized_path
+        elseif mode == "directory" or mode == "link" then
+            directory = sanitized_path
+        end
         break
     end
 end
@@ -114,6 +148,13 @@ end
 -- Night mode
 if G_reader_settings:isTrue("night_mode") then
     Device.screen:toggleNightMode()
+end
+-- Ensure the proper rotation on startup.
+-- We default to the rotation KOReader closed with.
+-- If the rotation is not locked it will be overridden by a book or the FM when opened.
+local rotation_mode = G_reader_settings:readSetting("closed_rotation_mode")
+if rotation_mode and rotation_mode ~= Device.screen:getRotationMode() then
+    Device.screen:setRotationMode(rotation_mode)
 end
 -- Dithering
 if Device:hasEinkScreen() then
@@ -169,7 +210,7 @@ local UIManager = require("ui/uimanager")
 -- and we are not (yet?) able to guess that fact)
 if Device:hasColorScreen() and not G_reader_settings:has("color_rendering") then
     -- enable it to prevent further display of this message
-    G_reader_settings:saveSetting("color_rendering", true)
+    G_reader_settings:makeTrue("color_rendering")
     local InfoMessage = require("ui/widget/infomessage")
     UIManager:show(InfoMessage:new{
         text = _("Documents will be rendered in color on this device.\nIf your device is grayscale, you can disable color rendering in the screen sub-menu for reduced memory usage."),
@@ -195,91 +236,71 @@ if G_reader_settings:isTrue("color_rendering") and not Device:hasColorScreen() t
     })
 end
 
+-- Get which file to start with
+local last_file = G_reader_settings:readSetting("lastfile")
+local start_with = G_reader_settings:readSetting("start_with") or "filemanager"
+
 -- Helpers
-local lfs = require("libs/libkoreader-lfs")
 local function retryLastFile()
     local ConfirmBox = require("ui/widget/confirmbox")
     return ConfirmBox:new{
         text = _("Cannot open last file.\nThis could be because it was deleted or because external storage is still being mounted.\nDo you want to retry?"),
         ok_callback = function()
-            local last_file = G_reader_settings:readSetting("lastfile")
-            if lfs.attributes(last_file, "mode") == "file" then
-                local ReaderUI = require("apps/reader/readerui")
-                UIManager:nextTick(function()
-                    ReaderUI:showReader(last_file)
-                end)
-            else
+            if lfs.attributes(last_file, "mode") ~= "file" then
                 UIManager:show(retryLastFile())
             end
+        end,
+        cancel_callback = function()
+            start_with = "filemanager"
         end,
     }
 end
 
-local function getPathFromURI(str)
-    local hexToChar = function(x)
-        return string.char(tonumber(x, 16))
-    end
-
-    local unescape = function(url)
-       return url:gsub("%%(%x%x)", hexToChar)
-    end
-
-    local prefix = "file://"
-    if str:sub(1, #prefix) ~= prefix then
-        return str
-    end
-    return unescape(str):sub(#prefix+1)
-end
-
--- Get which file to start with
-local last_file = G_reader_settings:readSetting("lastfile")
-local start_with = G_reader_settings:readSetting("start_with")
-local open_last = start_with == "last"
-
-if open_last and last_file and lfs.attributes(last_file, "mode") ~= "file" then
-    UIManager:show(retryLastFile())
-    last_file = nil
+-- Start app
+local exit_code
+if file then
+    local ReaderUI = require("apps/reader/readerui")
+    UIManager:nextTick(function()
+        ReaderUI:showReader(file)
+    end)
+    exit_code = UIManager:run()
+elseif directory then
+    local FileManager = require("apps/filemanager/filemanager")
+    UIManager:nextTick(function()
+        FileManager:showFiles(directory)
+    end)
+    exit_code = UIManager:run()
 else
     local QuickStart = require("ui/quickstart")
     if not QuickStart:isShown() then
-        open_last = true
+        start_with = "last"
         last_file = QuickStart:getQuickStart()
     end
-end
 
--- Start app
-local exit_code
-if ARGV[argidx] and ARGV[argidx] ~= "" then
-    local file
-    local sanitized_path = getPathFromURI(ARGV[argidx])
-    if lfs.attributes(sanitized_path, "mode") == "file" then
-        file = sanitized_path
-    elseif open_last and last_file then
-        file = last_file
+    if start_with == "last" and last_file and lfs.attributes(last_file, "mode") ~= "file" then
+        UIManager:show(retryLastFile())
+        -- no exit code as something else will be run after this.
+        UIManager:run()
     end
-    -- if file is given in command line argument or open last document is set
-    -- true, the given file or the last file is opened in the reader
-    if file and file ~= "" then
+    if start_with == "last" and last_file then
         local ReaderUI = require("apps/reader/readerui")
         UIManager:nextTick(function()
-            ReaderUI:showReader(file)
+            ReaderUI:showReader(last_file)
         end)
-    -- we assume a directory is given in command line argument
-    -- the filemanger will show the files in that path
+        exit_code = UIManager:run()
     else
         local FileManager = require("apps/filemanager/filemanager")
         local home_dir =
-            G_reader_settings:readSetting("home_dir") or ARGV[argidx]
+            G_reader_settings:readSetting("home_dir") or Device.home_dir or lfs.currentdir()
         UIManager:nextTick(function()
-            FileManager:setRotationMode(true)
             FileManager:showFiles(home_dir)
         end)
-        -- always open history on top of filemanager so closing history
-        -- doesn't result in exit
+        -- Always open history on top of filemanager so closing history
+        -- doesn't result in exit.
         if start_with == "history" then
             local FileManagerHistory = require("apps/filemanager/filemanagerhistory")
             UIManager:nextTick(function()
-                FileManagerHistory:onShowHist(last_file)
+                FileManagerHistory:onShowHist()
             end)
         elseif start_with == "favorites" then
             local FileManagerCollection = require("apps/filemanager/filemanagercollection")
@@ -296,16 +317,8 @@ if ARGV[argidx] and ARGV[argidx] ~= "" then
                 }:onShowFolderShortcutsDialog()
             end)
         end
+        exit_code = UIManager:run()
     end
-    exit_code = UIManager:run()
-elseif last_file then
-    local ReaderUI = require("apps/reader/readerui")
-    UIManager:nextTick(function()
-        ReaderUI:showReader(last_file)
-    end)
-    exit_code = UIManager:run()
-else
-    return showusage()
 end
 
 -- Exit
@@ -324,6 +337,9 @@ local function exitReader()
     -- Save any device settings before closing G_reader_settings
     Device:saveSettings()
 
+    -- Save current rotation (or the original rotation if ScreenSaver temporarily modified it) to remember it for next startup
+    G_reader_settings:saveSetting("closed_rotation_mode", Device.orig_rotation_mode or Device.screen:getRotationMode())
+
     G_reader_settings:close()
 
     -- Close lipc handles
@@ -335,10 +351,12 @@ local function exitReader()
     if Profiler then Profiler.stop() end
 
     if type(exit_code) == "number" then
-        os.exit(exit_code)
+        return exit_code
     else
-        os.exit(0)
+        return true
     end
 end
 
-exitReader()
+local ret = exitReader()
+-- Close the Lua state on exit
+os.exit(ret, true)

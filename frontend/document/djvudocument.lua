@@ -149,8 +149,10 @@ function DjvuDocument:drawPage(target, x, y, rect, pageno, zoom, rotation, gamma
 end
 
 function DjvuDocument:register(registry)
-    registry:addProvider("djv", "image/vnd.djvu", self, 100)
     registry:addProvider("djvu", "image/vnd.djvu", self, 100)
+    registry:addProvider("djvu", "application/djvu", self, 100) -- Alternative mimetype for OPDS.
+    registry:addProvider("djvu", "image/x-djvu", self, 100) -- Alternative mimetype for OPDS.
+    registry:addProvider("djv", "image/vnd.djvu", self, 100)
 end
 
 return DjvuDocument

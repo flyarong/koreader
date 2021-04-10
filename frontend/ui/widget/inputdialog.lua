@@ -319,6 +319,7 @@ function InputDialog:init()
             lang = self.lang, -- these might influence height
             para_direction_rtl = self.para_direction_rtl,
             auto_para_direction = self.auto_para_direction,
+            for_measurement_only = true, -- flag it as a dummy, so it won't trigger any bogus repaint/refresh...
         }
         local text_height = input_widget:getTextHeight()
         local line_height = input_widget:getLineHeight()
@@ -491,7 +492,7 @@ end
 function InputDialog:onCloseWidget()
     self:onClose()
     UIManager:setDirty(nil, self.fullscreen and "full" or function()
-        return "partial", self.dialog_frame.dimen
+        return "ui", self.dialog_frame.dimen
     end)
 end
 
@@ -605,7 +606,6 @@ function InputDialog:_addSaveCloseButtons()
                         self._buttons_edit_callback(false)
                         UIManager:show(Notification:new{
                             text = msg or _("Text reset"),
-                            timeout = 2
                         })
                     else -- nil content, assume failure and show msg
                         if msg ~= false then -- false allows for no InfoMessage
@@ -638,7 +638,6 @@ function InputDialog:_addSaveCloseButtons()
                         self._buttons_edit_callback(false)
                         UIManager:show(Notification:new{
                             text = msg or _("Saved"),
-                            timeout = 2
                         })
                     end
                 end
@@ -659,7 +658,6 @@ function InputDialog:_addSaveCloseButtons()
                         UIManager:close(self)
                         UIManager:show(Notification:new{
                             text = self.close_discarded_notif_text or _("Changes discarded"),
-                            timeout = 2
                         })
                     end,
                     choice2_text = self.close_save_button_text or _("Save"),
@@ -679,7 +677,6 @@ function InputDialog:_addSaveCloseButtons()
                                 UIManager:close(self)
                                 UIManager:show(Notification:new{
                                     text = msg or _("Saved"),
-                                    timeout = 2
                                 })
                             end
                         end)
@@ -729,6 +726,7 @@ function InputDialog:_addScrollButtons(nav_bar)
         table.insert(row, {
             text = "⇱",
             id = "top",
+            vsync = true,
             callback = function()
                 self._input_widget:scrollToTop()
             end,
@@ -736,6 +734,7 @@ function InputDialog:_addScrollButtons(nav_bar)
         table.insert(row, {
             text = "⇲",
             id = "bottom",
+            vsync = true,
             callback = function()
                 self._input_widget:scrollToBottom()
             end,

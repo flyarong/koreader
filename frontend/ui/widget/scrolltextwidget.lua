@@ -40,6 +40,9 @@ local ScrollTextWidget = InputContainer:new{
     para_direction_rtl = nil,
     auto_para_direction = false,
     alignment_strict = false,
+
+    -- for internal use
+    for_measurement_only = nil, -- When the widget is a one-off used to compute text height
 }
 
 function ScrollTextWidget:init()
@@ -62,6 +65,7 @@ function ScrollTextWidget:init()
         para_direction_rtl = self.para_direction_rtl,
         auto_para_direction = self.auto_para_direction,
         alignment_strict = self.alignment_strict,
+        for_measurement_only = self.for_measurement_only,
     }
     local visible_line_count = self.text_widget:getVisLineCount()
     local total_line_count = self.text_widget:getAllLineCount()
@@ -146,17 +150,41 @@ function ScrollTextWidget:updateScrollBar(is_partial)
         self.prev_low = low
         self.prev_high = high
         self.v_scroll_bar:set(low, high)
-        local refreshfunc = "ui"
-        if is_partial then
-            refreshfunc = "partial"
+
+        -- Don't even try to refresh dummy widgets used for text height computations...
+        if not self.for_measurement_only then
+            local refreshfunc = "ui"
+            if is_partial then
+                refreshfunc = "partial"
+            end
+            -- Reset transparency if the dialog's MovableContainer is currently translucent...
+            if is_partial and self.dialog.movable and self.dialog.movable.alpha then
+                self.dialog.movable.alpha = nil
+                UIManager:setDirty(self.dialog, function()
+                    return refreshfunc, self.dialog.movable.dimen
+                end)
+            else
+                UIManager:setDirty(self.dialog, function()
+                    return refreshfunc, self.dimen
+                end)
+            end
         end
-        UIManager:setDirty(self.dialog, function()
-            return refreshfunc, self.dimen
-        end)
+
         if self.scroll_callback then
             self.scroll_callback(low, high)
         end
     end
+end
+
+-- Reset the scrolling *state* to the top of the document, but don't actually re-render/refresh anything.
+-- (Useful when replacing a Scroll*Widget during an update call, c.f., DictQuickLookup).
+function ScrollTextWidget:resetScroll()
+    local low, high = self.text_widget:getVisibleHeightRatios()
+    self.v_scroll_bar:set(low, high)
+
+    local visible_line_count = self.text_widget:getVisLineCount()
+    local total_line_count = self.text_widget:getAllLineCount()
+    self.v_scroll_bar.enable = visible_line_count < total_line_count
 end
 
 function ScrollTextWidget:moveCursorToCharPos(charpos)
@@ -173,42 +201,42 @@ function ScrollTextWidget:moveCursorToXY(x, y, no_overflow)
 end
 
 function ScrollTextWidget:moveCursorLeft()
-    self.text_widget:moveCursorLeft();
+    self.text_widget:moveCursorLeft()
     self:updateScrollBar()
 end
 
 function ScrollTextWidget:moveCursorRight()
-    self.text_widget:moveCursorRight();
+    self.text_widget:moveCursorRight()
     self:updateScrollBar()
 end
 
 function ScrollTextWidget:moveCursorUp()
-    self.text_widget:moveCursorUp();
+    self.text_widget:moveCursorUp()
     self:updateScrollBar()
 end
 
 function ScrollTextWidget:moveCursorDown()
-    self.text_widget:moveCursorDown();
+    self.text_widget:moveCursorDown()
     self:updateScrollBar()
 end
 
 function ScrollTextWidget:scrollDown()
-    self.text_widget:scrollDown();
+    self.text_widget:scrollDown()
     self:updateScrollBar(true)
 end
 
 function ScrollTextWidget:scrollUp()
-    self.text_widget:scrollUp();
+    self.text_widget:scrollUp()
     self:updateScrollBar(true)
 end
 
 function ScrollTextWidget:scrollToTop()
-    self.text_widget:scrollToTop();
+    self.text_widget:scrollToTop()
     self:updateScrollBar(true)
 end
 
 function ScrollTextWidget:scrollToBottom()
-    self.text_widget:scrollToBottom();
+    self.text_widget:scrollToBottom()
     self:updateScrollBar(true)
 end
 
@@ -252,28 +280,28 @@ function ScrollTextWidget:onTapScrollText(arg, ges)
     end
     -- same tests as done in TextBoxWidget:scrollUp/Down
     if BD.flipIfMirroredUILayout(ges.pos.x < Screen:getWidth()/2) then
-        if self.text_widget.virtual_line_num > 1 then
-            self:scrollText(-1)
-            return true
-        end
+        return self:onScrollUp()
     else
-        if self.text_widget.virtual_line_num + self.text_widget:getVisLineCount() <= #self.text_widget.vertical_string_list then
-            self:scrollText(1)
-            return true
-        end
+        return self:onScrollDown()
+    end
+end
+
+function ScrollTextWidget:onScrollUp()
+    if self.text_widget.virtual_line_num > 1 then
+        self:scrollText(-1)
+        return true
     end
     -- if we couldn't scroll (because we're already at top or bottom),
     -- let it propagate up (e.g. for quickdictlookup to go to next/prev result)
 end
 
 function ScrollTextWidget:onScrollDown()
-    self:scrollText(1)
-    return true
-end
-
-function ScrollTextWidget:onScrollUp()
-    self:scrollText(-1)
-    return true
+    if self.text_widget.virtual_line_num + self.text_widget:getVisLineCount() <= #self.text_widget.vertical_string_list then
+        self:scrollText(1)
+        return true
+    end
+    -- if we couldn't scroll (because we're already at top or bottom),
+    -- let it propagate up (e.g. for quickdictlookup to go to next/prev result)
 end
 
 function ScrollTextWidget:onPanText(arg, ges)

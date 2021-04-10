@@ -1,13 +1,12 @@
 local DocumentRegistry = require("document/documentregistry")
 local FFIUtil = require("ffi/util")
-local http = require('socket.http')
-local https = require('ssl.https')
-local ltn12 = require('ltn12')
-local mime = require('mime')
-local socket = require('socket')
-local url = require('socket.url')
+local http = require("socket.http")
+local ltn12 = require("ltn12")
+local socket = require("socket")
+local socketutil = require("socketutil")
 local util = require("util")
 local _ = require("gettext")
+local logger = require("logger")
 
 local WebDavApi = {
 }
@@ -77,24 +76,30 @@ function WebDavApi:listFolder(address, user, pass, folder_path)
         webdav_url = webdav_url .. "/"
     end
 
-    local request, sink = {}, {}
-    local parsed = url.parse(webdav_url)
+    local sink = {}
     local data = [[<?xml version="1.0"?><a:propfind xmlns:a="DAV:"><a:prop><a:resourcetype/></a:prop></a:propfind>]]
-    local auth = string.format("%s:%s", user, pass)
-    local headers = { ["Authorization"] = "Basic " .. mime.b64( auth ),
-        ["Content-Type"] = "application/xml",
-        ["Depth"] = "1",
-        ["Content-Length"] = #data}
-    request["url"] = webdav_url
-    request["method"] = "PROPFIND"
-    request["headers"] = headers
-    request["source"] = ltn12.source.string(data)
-    request["sink"] = ltn12.sink.table(sink)
-    http.TIMEOUT = 5
-    https.TIMEOUT = 5
-    local httpRequest = parsed.scheme == "http" and http.request or https.request
-    local headers_request = socket.skip(1, httpRequest(request))
+    socketutil:set_timeout()
+    local request = {
+        url      = webdav_url,
+        method   = "PROPFIND",
+        headers  = {
+            ["Content-Type"]   = "application/xml",
+            ["Depth"]          = "1",
+            ["Content-Length"] = #data,
+        },
+        user     = user,
+        password = pass,
+        source   = ltn12.source.string(data),
+        sink     = ltn12.sink.table(sink),
+    }
+    local headers_request = socket.skip(1, http.request(request))
+    socketutil:reset_timeout()
     if headers_request == nil then
+        return nil
+    elseif headers_request < 200 or headers_request >= 300 then
+        -- got a response, but it wasn't a success (e.g. auth failure)
+        logger.dbg(headers_request)
+        logger.dbg(table.concat(sink))
         return nil
     end
 
@@ -152,18 +157,15 @@ function WebDavApi:listFolder(address, user, pass, folder_path)
 end
 
 function WebDavApi:downloadFile(file_url, user, pass, local_path)
-    local parsed = url.parse(file_url)
-    local auth = string.format("%s:%s", user, pass)
-    local headers = { ["Authorization"] = "Basic " .. mime.b64( auth ) }
-    http.TIMEOUT = 5
-    https.TIMEOUT = 5
-    local httpRequest = parsed.scheme == "http" and http.request or https.request
-    local _, code_return, _ = httpRequest{
-        url = file_url,
-        method = "GET",
-        headers = headers,
-        sink = ltn12.sink.file(io.open(local_path, "w"))
-    }
+    socketutil:set_timeout(socketutil.FILE_BLOCK_TIMEOUT, socketutil.FILE_TOTAL_TIMEOUT)
+    local code_return = socket.skip(1, http.request{
+        url      = file_url,
+        method   = "GET",
+        sink     = ltn12.sink.file(io.open(local_path, "w")),
+        user     = user,
+        password = pass,
+    })
+    socketutil:reset_timeout()
     return code_return
 end
 

@@ -37,7 +37,7 @@ end
 
 function ReaderWikipedia:lookupInput()
     self.input_dialog = InputDialog:new{
-        title = _("Enter words to look up on Wikipedia"),
+        title = _("Enter a word or phrase to look up"),
         input = "",
         input_type = "text",
         buttons = {
@@ -52,8 +52,10 @@ function ReaderWikipedia:lookupInput()
                     text = _("Search Wikipedia"),
                     is_enter_default = true,
                     callback = function()
+                        if self.input_dialog:getInputText() == "" then return end
                         UIManager:close(self.input_dialog)
-                        self:onLookupWikipedia(self.input_dialog:getInputText())
+                        -- Trust that input text does not need any cleaning (allows querying for "-suffix")
+                        self:onLookupWikipedia(self.input_dialog:getInputText(), true)
                     end,
                 },
             }
@@ -98,12 +100,14 @@ function ReaderWikipedia:addToMainMenu(menu_items)
                     os.date("%Y-%m-%d %H:%M:%S", value.time),
                     text,
                     callback = function()
-                        self:onLookupWikipedia(value.word, nil, value.page, value.lang)
+                        -- Word had been cleaned before being added to history
+                        self:onLookupWikipedia(value.word, true, nil, value.page, value.lang)
                     end
                 })
             end
             UIManager:show(KeyValuePage:new{
                 title = _("Wikipedia history"),
+                value_overflow_align = "right",
                 kv_pairs = kv_pairs,
             })
         end,
@@ -166,21 +170,21 @@ function ReaderWikipedia:addToMainMenu(menu_items)
                 end,
             },
             { -- setting used by dictquicklookup
-                text = _("Set Wikipedia 'Save as EPUB' directory"),
+                text = _("Set Wikipedia 'Save as EPUB' folder"),
                 keep_menu_open = true,
                 callback = function()
                     local choose_directory = function()
                         -- Default directory as chosen by DictQuickLookup
                         local default_dir = G_reader_settings:readSetting("wikipedia_save_dir")
-                        if not default_dir then default_dir = G_reader_settings:readSetting("home_dir") end
-                        if not default_dir then default_dir = require("apps/filemanager/filemanagerutil").getDefaultDir() end
+                                         or G_reader_settings:readSetting("home_dir")
+                                         or require("apps/filemanager/filemanagerutil").getDefaultDir()
                         local dialog
                         dialog = ButtonDialogTitle:new{
-                            title = T(_("Current Wikipedia 'Save as EPUB' directory:\n\n%1\n"), BD.dirpath(default_dir)),
+                            title = T(_("Current Wikipedia 'Save as EPUB' folder:\n\n%1\n"), BD.dirpath(default_dir)),
                             buttons = {
                                 {
                                     {
-                                        text = _("Keep this directory"),
+                                        text = _("Keep this folder"),
                                         callback = function()
                                             UIManager:close(dialog)
                                         end,
@@ -188,16 +192,16 @@ function ReaderWikipedia:addToMainMenu(menu_items)
                                 },
                                 {
                                     {
-                                    text = _("Select another directory"),
+                                    text = _("Select another folder"),
                                     callback = function()
                                         UIManager:close(dialog)
                                         -- Use currently read book's directory as starting point,
                                         -- so a user reading a wikipedia article can quickly select
                                         -- it to save related new articles in the same directory
                                         local dir = G_reader_settings:readSetting("wikipedia_save_dir")
-                                        if not dir then dir = G_reader_settings:readSetting("home_dir") end
-                                        if not dir then dir = require("apps/filemanager/filemanagerutil").getDefaultDir() end
-                                        if not dir then dir = "/" end
+                                                 or G_reader_settings:readSetting("home_dir")
+                                                 or require("apps/filemanager/filemanagerutil").getDefaultDir()
+                                                 or "/"
                                         -- If this directory has no subdirectory, we would be displaying
                                         -- a single "..", so use parent directory in that case.
                                         local has_subdirectory = false
@@ -221,7 +225,7 @@ function ReaderWikipedia:addToMainMenu(menu_items)
                                             onConfirm = function(path)
                                                 G_reader_settings:saveSetting("wikipedia_save_dir", path)
                                                 UIManager:show(InfoMessage:new{
-                                                    text = T(_("Wikipedia 'Save as EPUB' directory set to:\n%1"), BD.dirpath(path)),
+                                                    text = T(_("Wikipedia 'Save as EPUB' folder set to:\n%1"), BD.dirpath(path)),
                                                 })
                                             end
                                         }
@@ -246,7 +250,7 @@ function ReaderWikipedia:addToMainMenu(menu_items)
                             local text = _([[
 Wikipedia articles can be saved as an EPUB for more comfortable reading.
 
-You can select an existing directory, or use a default directory named "Wikipedia" in your reader's home directory.
+You can select an existing folder, or use a default folder named "Wikipedia" in your reader's home folder.
 
 Where do you want them saved?]])
                             UIManager:show(ConfirmBox:new{
@@ -258,10 +262,10 @@ Where do you want them saved?]])
                                     end
                                     G_reader_settings:saveSetting("wikipedia_save_dir", wikipedia_dir)
                                     UIManager:show(InfoMessage:new{
-                                        text = T(_("Wikipedia 'Save as EPUB' directory set to:\n%1"), BD.dirpath(wikipedia_dir)),
+                                        text = T(_("Wikipedia 'Save as EPUB' folder set to:\n%1"), BD.dirpath(wikipedia_dir)),
                                     })
                                 end,
-                                cancel_text = _("Select directory"),
+                                cancel_text = _("Select folder"),
                                 cancel_callback = function()
                                     choose_directory()
                                 end,
@@ -274,7 +278,7 @@ Where do you want them saved?]])
                 end,
             },
             { -- setting used by dictquicklookup
-                text = _("Save Wikipedia EPUB in current book directory"),
+                text = _("Save Wikipedia EPUB in current book folder"),
                 checked_func = function()
                     return G_reader_settings:isTrue("wikipedia_save_in_book_dir")
                 end,
@@ -375,16 +379,16 @@ function ReaderWikipedia:initLanguages(word)
     end
 end
 
-function ReaderWikipedia:onLookupWikipedia(word, box, get_fullpage, forced_lang)
+function ReaderWikipedia:onLookupWikipedia(word, is_sane, box, get_fullpage, forced_lang)
     -- Wrapped through Trapper, as we may be using Trapper:dismissableRunInSubprocess() in it
     Trapper:wrap(function()
-        self:lookupWikipedia(word, box, get_fullpage, forced_lang)
+        self:lookupWikipedia(word, is_sane, box, get_fullpage, forced_lang)
     end)
     return true
 end
 
-function ReaderWikipedia:lookupWikipedia(word, box, get_fullpage, forced_lang)
-    if NetworkMgr:willRerunWhenOnline(function() self:lookupWikipedia(word, box, get_fullpage, forced_lang) end) then
+function ReaderWikipedia:lookupWikipedia(word, is_sane, box, get_fullpage, forced_lang)
+    if NetworkMgr:willRerunWhenOnline(function() self:lookupWikipedia(word, is_sane, box, get_fullpage, forced_lang) end) then
         -- Not online yet, nothing more to do here, NetworkMgr will forward the callback and run it once connected!
         return
     end
@@ -404,7 +408,7 @@ function ReaderWikipedia:lookupWikipedia(word, box, get_fullpage, forced_lang)
     -- no need to clean word if get_fullpage, as it is the exact wikipetia page title
     if word and not get_fullpage then
         -- escape quotes and other funny characters in word
-        word = self:cleanSelection(word)
+        word = self:cleanSelection(word, is_sane)
         -- no need to lower() word with wikipedia search
     end
     logger.dbg("stripped word:", word)
@@ -439,7 +443,7 @@ function ReaderWikipedia:lookupWikipedia(word, box, get_fullpage, forced_lang)
     else
         self.lookup_msg = T(_("Searching Wikipedia %2 for:\n%1"), "%1", lang:upper())
         req_failure_text = _("Failed searching Wikipedia.")
-        no_result_text = _("No Wikipedia articles matching search term.")
+        no_result_text = _("No results.")
     end
     self:showLookupInfo(display_word)
 
@@ -488,7 +492,7 @@ function ReaderWikipedia:lookupWikipedia(word, box, get_fullpage, forced_lang)
                 dict = T(_("Wikipedia %1"), lang:upper()),
                 word = page.title,
                 definition = definition,
-                is_fullpage = get_fullpage,
+                is_wiki_fullpage = get_fullpage,
                 lang = lang,
                 rtl_lang = Wikipedia:isWikipediaLanguageRTL(lang),
                 images = page.images,
@@ -500,7 +504,7 @@ function ReaderWikipedia:lookupWikipedia(word, box, get_fullpage, forced_lang)
         -- dummy results
         local definition
         if lookup_cancelled then
-            definition = _("Wikipedia request canceled.")
+            definition = _("Wikipedia request interrupted.")
         elseif ok then
             definition = no_result_text
         else
@@ -512,7 +516,7 @@ function ReaderWikipedia:lookupWikipedia(word, box, get_fullpage, forced_lang)
                 dict = T(_("Wikipedia %1"), lang:upper()),
                 word = word,
                 definition = definition,
-                is_fullpage = get_fullpage,
+                is_wiki_fullpage = get_fullpage,
                 lang = lang,
             }
         }

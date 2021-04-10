@@ -3,7 +3,6 @@ This module contains miscellaneous helper functions for the KOReader frontend.
 ]]
 
 local BaseUtil = require("ffi/util")
-local dbg = require("dbg")
 local _ = require("gettext")
 local T = BaseUtil.template
 
@@ -221,25 +220,59 @@ function util.secondsToHClock(seconds, withoutSeconds, hmsFormat)
     end
 end
 
---- Converts timestamp to an hour string
----- @int seconds number of seconds
----- @bool twelve_hour_clock
----- @treturn string hour string
-function util.secondsToHour(seconds, twelve_hour_clock)
-    local time
-    if twelve_hour_clock then
-        if os.date("%p", seconds) == "AM" then
-            -- @translators This is the time in the morning in the 12-hour clock (%I is the hour, %M the minute).
-            time = os.date(_("%I:%M AM"), seconds)
+if jit.os == "Windows" then
+    --- Converts timestamp to an hour string
+    ---- @int seconds number of seconds
+    ---- @bool twelve_hour_clock
+    ---- @treturn string hour string
+    ---- @note: The MS CRT doesn't support either %l & %k, or the - format modifier (as they're not technically C99 or POSIX).
+    ----        They are otherwise supported on Linux, BSD & Bionic, so, just special-case Windows...
+    ----        We *could* arguably feed the os.date output to gsub("^0(%d)(.*)$", "%1%2"), but, while unlikely,
+    ----        it's conceivable that a translator would put something other that the hour at the front of the string ;).
+    function util.secondsToHour(seconds, twelve_hour_clock)
+        if twelve_hour_clock then
+            if os.date("%p", seconds) == "AM" then
+                -- @translators This is the time in the morning using a 12-hour clock (%I is the hour, %M the minute).
+                return os.date(_("%I:%M AM"), seconds)
+            else
+                -- @translators This is the time in the afternoon using a 12-hour clock (%I is the hour, %M the minute).
+                return os.date(_("%I:%M PM"), seconds)
+            end
         else
-            -- @translators This is the time in the afternoon in the 12-hour clock (%I is the hour, %M the minute).
-            time = os.date(_("%I:%M PM"), seconds)
+            -- @translators This is the time using a 24-hour clock (%H is the hour, %M the minute).
+            return os.date(_("%H:%M"), seconds)
         end
-    else
-        -- @translators This is the time in the 24-hour clock (%H is the hour, %M the minute).
-        time = os.date(_("%H:%M"), seconds)
     end
-    return time
+else
+    function util.secondsToHour(seconds, twelve_hour_clock, pad_with_spaces)
+        if twelve_hour_clock then
+            if os.date("%p", seconds) == "AM" then
+                if pad_with_spaces then
+                    -- @translators This is the time in the morning using a 12-hour clock (%_I is the hour, %M the minute).
+                    return os.date(_("%_I:%M AM"), seconds)
+                else
+                    -- @translators This is the time in the morning using a 12-hour clock (%-I is the hour, %M the minute).
+                    return os.date(_("%-I:%M AM"), seconds)
+                end
+            else
+                if pad_with_spaces then
+                    -- @translators This is the time in the afternoon using a 12-hour clock (%_I is the hour, %M the minute).
+                    return os.date(_("%_I:%M PM"), seconds)
+                else
+                    -- @translators This is the time in the afternoon using a 12-hour clock (%-I is the hour, %M the minute).
+                    return os.date(_("%-I:%M PM"), seconds)
+                end
+            end
+        else
+            if pad_with_spaces then
+                -- @translators This is the time using a 24-hour clock (%_H is the hour, %M the minute).
+                return os.date(_("%_H:%M"), seconds)
+            else
+                -- @translators This is the time using a 24-hour clock (%-H is the hour, %M the minute).
+                return os.date(_("%-H:%M"), seconds)
+            end
+        end
+    end
 end
 
 --- Converts timestamp to a date string
@@ -248,7 +281,8 @@ end
 ---- @treturn string date string
 function util.secondsToDate(seconds, twelve_hour_clock)
     local BD = require("ui/bidi")
-    local time = util.secondsToHour(seconds, twelve_hour_clock)
+    -- In order to keep stuff aligned, we'll want to *keep* the padding, but using blanks instead of zeroes.
+    local time = util.secondsToHour(seconds, twelve_hour_clock, true)
     -- @translators This is the date (%Y is the year, %m the month, %d the day)
     local day = os.date(_("%Y-%m-%d"), seconds)
     return BD.wrap(day) .. " " .. BD.wrap(time)
@@ -339,7 +373,45 @@ function util.arrayAppend(t1, t2)
     end
 end
 
--- Reverse array elements in-place in table t
+--[[--
+Remove elements from an array, fast.
+
+Swap & pop, like <http://lua-users.org/lists/lua-l/2013-11/msg00027.html> / <https://stackoverflow.com/a/28942022>, but preserving order.
+c.f., <https://stackoverflow.com/a/53038524>
+
+@table t Lua array to filter
+@func keep_cb Filtering callback. Takes three arguments: table, index, new index. Returns true to *keep* the item. See link above for potential uses of the third argument.
+
+@usage
+
+local foo = { "a", "b", "c", "b", "d", "e" }
+local function drop_b(t, i, j)
+    -- Discard any item with value "b"
+    return t[i] ~= "b"
+end
+util.arrayRemove(foo, drop_b)
+]]
+function util.arrayRemove(t, keep_cb)
+    local j, n = 1, #t
+
+    for i = 1, n do
+        if keep_cb(t, i, j) then
+            -- Move i's kept value to j's position, if it's not already there.
+            if i ~= j then
+                t[j] = t[i]
+                t[i] = nil
+            end
+            -- Increment position of where we'll place the next kept value.
+            j = j + 1
+        else
+            t[i] = nil
+        end
+    end
+
+    return t
+end
+
+--- Reverse array elements in-place in table t
 ---- @param t Lua table
 function util.arrayReverse(t)
     local i, j = 1, #t
@@ -348,6 +420,49 @@ function util.arrayReverse(t)
         i = i + 1
         j = j - 1
     end
+end
+
+--- Test whether t contains a value equal to v
+--- (or such a value that callback returns true),
+--- and if so, return the index.
+---- @param t Lua table
+---- @param v
+---- @func callback(v1, v2)
+function util.arrayContains(t, v, cb)
+    cb = cb or function(v1, v2) return v1 == v2 end
+    for _k, _v in ipairs(t) do
+        if cb(_v, v) then
+            return _k
+        end
+    end
+    return false
+end
+
+--- Test whether array t contains a reference to array n (at any depth at or below m)
+---- @param t Lua table (array only)
+---- @param n Lua table (array only)
+---- @int m Max nesting level
+function util.arrayReferences(t, n, m, l)
+    if not m then m = 15 end
+    if not l then l = 0 end
+    if l > m then
+        return false
+    end
+
+    if type(t) == "table" then
+        if t == n then
+            return true, l
+        end
+
+        for _, v in ipairs(t) do
+            local matched, depth = util.arrayReferences(v, n, m, l + 1)
+            if matched then
+                return matched, depth
+            end
+        end
+    end
+
+    return false
 end
 
 -- Merge t2 into t1, overwriting existing elements if they already exist
@@ -561,13 +676,8 @@ function util.getFilesystemType(path)
     local mounts = io.open("/proc/mounts", "r")
     if not mounts then return nil end
     local type
-    while true do
-        local line
+    for line in mounts:lines() do
         local mount = {}
-        line = mounts:read()
-        if line == nil then
-            break
-        end
         for param in line:gmatch("%S+") do table.insert(mount, param) end
         if string.match(path, mount[2]) then
             type = mount[3]
@@ -582,7 +692,7 @@ end
 
 --- Recursively scan directory for files inside
 -- @string path
--- @function callback(fullpath, name, attr)
+-- @func callback(fullpath, name, attr)
 function util.findFiles(dir, cb)
     local function scan(current)
         local ok, iter, dir_obj = pcall(lfs.dir, current)
@@ -776,11 +886,11 @@ end
 --- If the given path has a trailing /, returns the entire path as the directory
 --- path and "" as the file name.
 ---- @string file
----- @treturn string path, filename
+---- @treturn string directory, filename
 function util.splitFilePathName(file)
     if file == nil or file == "" then return "", "" end
     if string.find(file, "/") == nil then return "", file end
-    return string.gsub(file, "(.*/)(.*)", "%1"), string.gsub(file, ".*/", "")
+    return file:match("(.*/)(.*)")
 end
 
 --- Splits a file name into its pure file name and suffix
@@ -789,7 +899,7 @@ end
 function util.splitFileNameSuffix(file)
     if file == nil or file == "" then return "", "" end
     if string.find(file, "%.") == nil then return file, "" end
-    return string.gsub(file, "(.*)%.(.*)", "%1"), string.gsub(file, ".*%.", "")
+    return file:match("(.*)%.(.*)")
 end
 
 --- Gets file extension
@@ -801,7 +911,7 @@ function util.getFileNameSuffix(file)
 end
 
 --- Companion helper function that returns the script's language,
---- based on the filme extension.
+--- based on the file extension.
 ---- @string filename
 ---- @treturn string (lowercase) (or nil if not Device:canExecuteScript(file))
 function util.getScriptType(file)
@@ -822,17 +932,17 @@ function util.getFriendlySize(size, right_align)
     local deci_format = right_align and "%6d" or "%d"
     size = tonumber(size)
     if not size or type(size) ~= "number" then return end
-    if size > 1024*1024*1024 then
+    if size > 1000*1000*1000 then
         -- @translators This is an abbreviation for the gigabyte, a unit of computer memory or data storage capacity.
-        return T(_("%1 GB"), string.format(frac_format, size/1024/1024/1024))
+        return T(_("%1 GB"), string.format(frac_format, size/1000/1000/1000))
     end
-    if size > 1024*1024 then
+    if size > 1000*1000 then
         -- @translators This is an abbreviation for the megabyte, a unit of computer memory or data storage capacity.
-        return T(_("%1 MB"), string.format(frac_format, size/1024/1024))
+        return T(_("%1 MB"), string.format(frac_format, size/1000/1000))
     end
-    if size > 1024 then
+    if size > 1000 then
         -- @translators This is an abbreviation for the kilobyte, a unit of computer memory or data storage capacity.
-        return T(_("%1 KB"), string.format(frac_format, size/1024))
+        return T(_("%1 kB"), string.format(frac_format, size/1000))
     else
         -- @translators This is an abbreviation for the byte, a unit of computer memory or data storage capacity.
         return T(_("%1 B"), string.format(deci_format, size))
@@ -966,16 +1076,22 @@ This may fail on complex HTML (with styles, scripts, comments), but should be fi
 @treturn string plain text
 ]]
 function util.htmlToPlainText(text)
-    -- Replace <br> and <p> with \n
+    -- Replace <br> with \n
     text = text:gsub("%s*<%s*br%s*/?>%s*", "\n") -- <br> and <br/>
-    text = text:gsub("%s*<%s*p%s*>%s*", "\n") -- <p>
+    -- Replace <p> with \n\t (\t, unlike any combination of spaces,
+    -- ensures a constant indentation when text is justified.)
     text = text:gsub("%s*</%s*p%s*>%s*", "\n") -- </p>
     text = text:gsub("%s*<%s*p%s*/>%s*", "\n") -- standalone <p/>
+    text = text:gsub("%s*<%s*p%s*>%s*", "\n\t") -- <p>
+        -- (this one last, so \t is not removed by the others' %s)
     -- Remove all HTML tags
     text = text:gsub("<[^>]*>", "")
     -- Convert HTML entities
     text = util.htmlEntitiesToUtf8(text)
-    -- Trim spaces and new lines at start and end
+    -- Trim spaces and new lines at start and end, including
+    -- the \t we added (this looks fine enough with multiple
+    -- paragraphs, but feels nicer with a single paragraph,
+    -- whether it contains <br>s or not).
     text = text:gsub("^[\n%s]*", "")
     text = text:gsub("[\n%s]*$", "")
     return text
@@ -1093,23 +1209,6 @@ function util.clearTable(t)
     for i = 0, c do t[i] = nil end
 end
 
---- Dumps a table into a file.
---- @table t the table to be dumped
---- @string file the file to store the table
---- @treturn bool true on success, false otherwise
-function util.dumpTable(t, file)
-    if not t or not file or file == "" then return end
-    local dump = require("dump")
-    local f = io.open(file, "w")
-    if f then
-        f:write("return "..dump(t))
-        f:close()
-        return true
-    end
-    return false
-end
-
-
 --- Encode URL also known as percent-encoding see https://en.wikipedia.org/wiki/Percent-encoding
 --- @string text the string to encode
 --- @treturn encode string
@@ -1155,40 +1254,20 @@ function util.checkLuaSyntax(lua_text)
     return err
 end
 
---- Unpack an archive.
--- Extract the contents of an archive, detecting its format by
--- filename extension. Inspired by luarocks archive_unpack()
--- @param archive string: Filename of archive.
--- @param extract_to string: Destination directory.
--- @return boolean or (boolean, string): true on success, false and an error message on failure.
-function util.unpackArchive(archive, extract_to)
-    dbg.dassert(type(archive) == "string")
-
-    local BD = require("ui/bidi")
-    local ok
-    if archive:match("%.tar%.bz2$") or archive:match("%.tar%.gz$") or archive:match("%.tar%.lz$") or archive:match("%.tgz$") then
-        ok = os.execute(("./tar xf %q -C %q"):format(archive, extract_to))
-    else
-        return false, T(_("Couldn't extract archive:\n\n%1\n\nUnrecognized filename extension."), BD.filepath(archive))
-    end
-    if not ok then
-        return false, T(_("Extracting archive failed:\n\n%1", BD.filepath(archive)))
-    end
-    return true
-end
-
--- Simple startsWith / endsWith string helpers
--- c.f., http://lua-users.org/wiki/StringRecipes
--- @param str string: source string
--- @param start string: string to match
--- @return boolean: true on success
+--- Simple startsWith string helper.
+--
+-- C.f., <http://lua-users.org/wiki/StringRecipes>.
+-- @string str source string
+-- @string start string to match
+-- @treturn bool true on success
 function util.stringStartsWith(str, start)
    return str:sub(1, #start) == start
 end
 
--- @param str string: source string
--- @param ending string: string to match
--- @return boolean: true on success
+--- Simple endsWith string helper.
+-- @string str source string
+-- @string ending string to match
+-- @treturn bool true on success
 function util.stringEndsWith(str, ending)
    return ending == "" or str:sub(-#ending) == ending
 end

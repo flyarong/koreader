@@ -165,6 +165,9 @@ function Trapper:info(text, fast_refresh)
                 ok_callback = function()
                     coroutine.resume(_coroutine, false)
                 end,
+                -- flush any pending tap, so past events won't be considered
+                -- action on the yet to be displayed widget
+                flush_events_on_show = true,
             }
             UIManager:show(abort_box)
             -- no need to forceRePaint, UIManager will do it when we yield()
@@ -186,10 +189,6 @@ function Trapper:info(text, fast_refresh)
         -- continue processing
     end
 
-    --- @todo We should try to flush any pending tap, so past
-    -- events won't be considered action on the yet to be displayed
-    -- widget
-
     -- If fast_refresh option, avoid UIManager refresh overhead
     if fast_refresh and self.current_widget and self.current_widget.is_infomessage then
         local orig_moved_offset = self.current_widget.movable:getMovedOffset()
@@ -198,7 +197,7 @@ function Trapper:info(text, fast_refresh)
         self.current_widget:init()
         self.current_widget.movable:setMovedOffset(orig_moved_offset)
         local Screen = require("device").screen
-        self.current_widget:paintTo(Screen.bb, 0,0)
+        self.current_widget:paintTo(Screen.bb, 0, 0)
         local d = self.current_widget[1][1].dimen
         Screen.refreshUI(Screen, d.x, d.y, d.w, d.h)
     else
@@ -214,7 +213,10 @@ function Trapper:info(text, fast_refresh)
             dismiss_callback = function()
                 coroutine.resume(_coroutine, false)
             end,
-            is_infomessage = true -- flag on our InfoMessages
+            is_infomessage = true, -- flag on our InfoMessages
+            -- flush any pending tap, so past events won't be considered
+            -- action on the yet to be displayed widget
+            flush_events_on_show = true,
         }
         logger.dbg("Showing InfoMessage:", text)
         UIManager:show(self.current_widget)
@@ -268,10 +270,6 @@ function Trapper:confirm(text, cancel_text, ok_text)
         return true -- always select "OK" in ConfirmBox if no UI
     end
 
-    --- @todo We should try to flush any pending tap, so past
-    -- events won't be considered action on the yet to be displayed
-    -- widget
-
     -- Close any previous widget
     if self.current_widget then
         UIManager:close(self.current_widget)
@@ -289,6 +287,9 @@ function Trapper:confirm(text, cancel_text, ok_text)
         ok_callback = function()
             coroutine.resume(_coroutine, true)
         end,
+        -- flush any pending tap, so past events won't be considered
+        -- action on the yet to be displayed widget
+        flush_events_on_show = true,
     }
     logger.dbg("Showing ConfirmBox and waiting for answer:", text)
     UIManager:show(self.current_widget)

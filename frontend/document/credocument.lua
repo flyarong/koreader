@@ -58,6 +58,11 @@ local CreDocument = Document:new{
     default_css = "./data/cr3.css",
     provider = "crengine",
     provider_name = "Cool Reader Engine",
+
+    hide_nonlinear_flows = false,
+    flows = {},
+    page_in_flow = {},
+    last_linear_page = nil,
 }
 
 -- NuPogodi, 20.05.12: inspect the zipfile content
@@ -195,6 +200,23 @@ function CreDocument:setupDefaultView()
     self._document:readDefaults()
     logger.dbg("CreDocument: applied cr3.ini default settings.")
 
+    -- Disable crengine image scaling options (we prefer scaling them via crengine.render.dpi)
+    self._document:setIntProperty("crengine.image.scaling.zoomin.block.mode", 0)
+    self._document:setIntProperty("crengine.image.scaling.zoomin.block.scale", 1)
+    self._document:setIntProperty("crengine.image.scaling.zoomin.inline.mode", 0)
+    self._document:setIntProperty("crengine.image.scaling.zoomin.inline.scale", 1)
+    self._document:setIntProperty("crengine.image.scaling.zoomout.block.mode", 0)
+    self._document:setIntProperty("crengine.image.scaling.zoomout.block.scale", 1)
+    self._document:setIntProperty("crengine.image.scaling.zoomout.inline.mode", 0)
+    self._document:setIntProperty("crengine.image.scaling.zoomout.inline.scale", 1)
+
+    -- If switching to two pages on view, we want it to behave like two columns
+    -- and each view to be a single page number (instead of the default of two).
+    -- This ensures that page number and count are consistent between top and
+    -- bottom status bars, that SkimTo -1/+1 don't do nothing every other tap,
+    -- and that reading statistics do not see half of the pages never read.
+    self._document:setIntProperty("window.pages.two.visible.as.one.page.number", 1)
+
     -- set fallback font faces (this was formerly done in :init(), but it
     -- affects crengine calcGlobalSettingsHash() and would invalidate the
     -- cache from the main currently being read document when we just
@@ -206,16 +228,16 @@ function CreDocument:setupDefaultView()
     self._document:adjustFontSizes(CanvasContext:getDPI())
 
     -- set top status bar font size
-    if G_reader_settings:readSetting("cre_header_status_font_size") then
+    if G_reader_settings:has("cre_header_status_font_size") then
         self._document:setIntProperty("crengine.page.header.font.size",
             G_reader_settings:readSetting("cre_header_status_font_size"))
     end
 
     -- One can set these to change from white background
-    if G_reader_settings:readSetting("cre_background_color") then
+    if G_reader_settings:has("cre_background_color") then
         self:setBackgroundColor(G_reader_settings:readSetting("cre_background_color"))
     end
-    if G_reader_settings:readSetting("cre_background_image") then
+    if G_reader_settings:has("cre_background_image") then
         self:setBackgroundImage(G_reader_settings:readSetting("cre_background_image"))
     end
 end
@@ -255,6 +277,13 @@ function CreDocument:render()
     logger.dbg("CreDocument: rendering done.")
 end
 
+function CreDocument:getDocumentRenderingHash()
+    if self.been_rendered then
+        return self._document:getDocumentRenderingHash()
+    end
+    return 0
+end
+
 function CreDocument:_readMetadata()
     Document._readMetadata(self) -- will grab/update self.info.number_of_pages
     if self.been_rendered then
@@ -283,8 +312,186 @@ function CreDocument:updateColorRendering()
     end
 end
 
-function CreDocument:getPageCount()
-    return self._document:getPages()
+function CreDocument:setHideNonlinearFlows(hide_nonlinear_flows)
+    if hide_nonlinear_flows ~= self.hide_nonlinear_flows then
+        self.hide_nonlinear_flows = hide_nonlinear_flows
+        self._document:setIntProperty("crengine.doc.nonlinear.pagebreak.force", self.hide_nonlinear_flows and 1 or 0)
+    end
+end
+
+function CreDocument:getPageCount(internal)
+    return self._document:getPages(internal)
+end
+
+-- Whether the document has any non-linear flow to care about
+function CreDocument:hasNonLinearFlows()
+    return self._document:hasNonLinearFlows()
+end
+
+-- Whether non-linear flows (if any) will be hidden
+function CreDocument:hasHiddenFlows()
+    return self.flows[1] ~= nil
+end
+
+-- Get the next/prev page number, skipping non-linear flows,
+-- i.e. the next/prev page that is either in the current
+-- flow or in the linear flow (flow 0)
+-- If "page" is 0, these give the initial and final linear pages
+function CreDocument:getNextPage(page)
+    if self:hasHiddenFlows() then
+        if page < 0 or page >= self:getPageCount() then
+            return 0
+        elseif page == 0 then
+            return self:getFirstPageInFlow(0)
+        end
+        local flow = self:getPageFlow(page)
+        local start_page = page + 1
+        local end_page = self:getLastLinearPage()
+        local test_page = start_page
+        -- max to ensure at least one iteration
+        -- (in case the current flow goes after all linear pages)
+        while test_page <= math.max(end_page, start_page) do
+            local test_page_flow = self:getPageFlow(test_page)
+            if test_page_flow == flow or test_page_flow == 0 then
+                -- same flow as current, or linear flow, this is a "good" page
+                return test_page
+            elseif test_page_flow > 0 then
+                -- some other non-linear flow, skip all pages in this flow
+                test_page = test_page + self:getTotalPagesInFlow(test_page_flow)
+            else
+                -- went beyond the last page
+                break
+            end
+        end
+        return 0
+    else
+        return Document.getNextPage(self, page)
+    end
+end
+
+function CreDocument:getPrevPage(page)
+    if self:hasHiddenFlows() then
+        if page < 0 or page > self:getPageCount() then
+            return 0
+        elseif page == 0 then
+            return self:getLastLinearPage()
+        end
+        local flow = self:getPageFlow(page)
+        local start_page = page - 1
+        local end_page = self:getFirstPageInFlow(0)
+        local test_page = start_page
+        -- min to ensure at least one iteration
+        -- (in case the current flow goes before all linear pages)
+        while test_page >= math.min(end_page, start_page) do
+            local test_page_flow = self:getPageFlow(test_page)
+            if test_page_flow == flow or test_page_flow == 0 then
+                -- same flow as current, or linear flow, this is a "good" page
+                return test_page
+            elseif test_page_flow > 0 then
+                -- some other non-linear flow, skip all pages in this flow
+                test_page = self:getFirstPageInFlow(test_page_flow) - 1
+            else
+                -- went beyond the first page
+                break
+            end
+        end
+        return 0
+    else
+        return Document.getPrevPage(self, page)
+    end
+end
+
+function CreDocument:getPageFlow(page)
+    -- Only report non-linear pages if "hide_nonlinear_flows" is enabled, and in 1-page mode,
+    -- otherwise all pages are linear (flow 0)
+    if self.hide_nonlinear_flows and self._view_mode == self.PAGE_VIEW_MODE and self:getVisiblePageCount() == 1 then
+        return self._document:getPageFlow(page)
+    else
+        return 0
+    end
+end
+
+function CreDocument:getLastLinearPage()
+    return self.last_linear_page
+end
+
+function CreDocument:getFirstPageInFlow(flow)
+    return self.flows[flow][1]
+end
+
+function CreDocument:getTotalPagesInFlow(flow)
+    return self.flows[flow][2]
+end
+
+function CreDocument:getPageNumberInFlow(page)
+    if self:hasHiddenFlows() then
+        return self.page_in_flow[page]
+    else
+        return page
+    end
+end
+
+function CreDocument:cacheFlows()
+    -- Build the cache tables "flows" and "page_in_flow", if there are
+    -- any non-linear flows in the source document. Also set the value
+    -- of "last_linear_page", to possibly speed up counting in documents
+    -- with many non-linear pages at the end.
+    -- flows[i] contains {ini, num}, where ini is the first page in flow i,
+    --          and num is the total number of pages in the flow.
+    -- page_in_flow[i] contains the number of page i with its flow.
+    --
+    -- So, flows[0][1] is the first page in the linear flow,
+    -- and page_in_flow[flows[0][1]] must be 1, because it is the first
+    self.flows = {}
+    self.page_in_flow = {}
+    if self:hasNonLinearFlows() and self.hide_nonlinear_flows then
+        for i=1,self:getPageCount() do
+            local flow = self:getPageFlow(i)
+            if self.flows[flow] ~= nil then
+                self.flows[flow][2] = self.flows[flow][2]+1
+            else
+                self.flows[flow] = {i, 1}
+            end
+            self.page_in_flow[i] = self.flows[flow][2]
+            if flow == 0 then
+                self.last_linear_page = i
+            end
+        end
+    else
+        self.last_linear_page = self:getPageCount()
+        self.flows[0] = {1, self.last_linear_page}
+    end
+end
+
+function CreDocument:getTotalPagesLeft(page)
+    if self:hasHiddenFlows() then
+        local pages_left
+        local last_linear = self:getLastLinearPage()
+        if page > last_linear then
+            -- If beyond the last linear page, count only the pages in the current flow
+            local flow = self:getPageFlow(page)
+            pages_left = self:getTotalPagesInFlow(flow) - self:getPageNumberInFlow(page)
+        else
+            -- Otherwise, count all pages until the last linear,
+            -- except the flows that start (and end) between
+            -- the current page and the last linear
+            pages_left = last_linear - page
+            for flow, tab in ipairs(self.flows) do
+                -- tab[1] is the initial page of the flow
+                -- tab[2] is the total number of pages in the flow
+                if tab[1] > last_linear then
+                     break
+                end
+                -- strict >, to make sure we include pages in the current flow
+                if tab[1] > page then
+                     pages_left = pages_left - tab[2]
+                end
+            end
+        end
+        return pages_left
+    else
+        return Document.getTotalPagesLeft(self, page)
+    end
 end
 
 function CreDocument:getCoverPageImage()
@@ -311,33 +518,87 @@ function CreDocument:getImageFromPosition(pos, want_frames)
 end
 
 function CreDocument:getWordFromPosition(pos)
-    local word_box = self._document:getWordFromPosition(pos.x, pos.y)
-    logger.dbg("CreDocument: get word box", word_box)
-    local text_range = self._document:getTextFromPositions(pos.x, pos.y, pos.x, pos.y)
-    logger.dbg("CreDocument: get text range", text_range)
     local wordbox = {
-        word = text_range.text == "" and word_box.word or text_range.text,
         page = self._document:getCurrentPage(),
     }
-    if word_box.word then
-        wordbox.sbox = Geom:new{
-            x = word_box.x0, y = word_box.y0,
-            w = word_box.x1 - word_box.x0,
-            h = word_box.y1 - word_box.y0,
-        }
-    else
-        -- dummy word box
-        wordbox.sbox = Geom:new{
-            x = pos.x, y = pos.y,
-            w = 20, h = 20,
-        }
-    end
+    -- We use getTextFromPositions() which is more accurate.
+    -- In case some stuff is missing, we could fallback to use
+    -- the less accurate getWordFromPosition().
+    -- But it looks like getTextFromPositions() is just fine, and
+    -- when it fails, it's because there's no word at position.
+    -- So, we'll return nil below in case not all is found
+    local word_found = false
+    local box_found = false
+
+    local text_range = self._document:getTextFromPositions(pos.x, pos.y, pos.x, pos.y)
+    logger.dbg("CreDocument: get text range", text_range)
     if text_range then
-        -- add xpointers if found, might be useful for across pages highlighting
+        if text_range.text and text_range.text ~= "" then
+            wordbox.word = text_range.text
+            word_found = true
+        end
+        if text_range.pos0 and text_range.pos1 then
+            -- get segments from these pos, to build the overall box
+            local word_boxes = self._document:getWordBoxesFromPositions(text_range.pos0, text_range.pos1, true)
+            if #word_boxes > 0 then
+                local overall_box
+                for i = 1, #word_boxes do
+                    local line_box = word_boxes[i]
+                    if not overall_box then
+                        overall_box = line_box
+                    else
+                        if line_box.x0 < overall_box.x0 then overall_box.x0 = line_box.x0 end
+                        if line_box.y0 < overall_box.y0 then overall_box.y0 = line_box.y0 end
+                        if line_box.x1 > overall_box.x1 then overall_box.x1 = line_box.x1 end
+                        if line_box.y1 > overall_box.y1 then overall_box.y1 = line_box.y1 end
+                    end
+                end
+                wordbox.sbox = Geom:new{
+                    x = overall_box.x0,
+                    y = overall_box.y0,
+                    w = overall_box.x1 - overall_box.x0,
+                    h = overall_box.y1 - overall_box.y0,
+                }
+                box_found = true
+            end
+        end
+        -- add xpointers if any, might be useful for across pages highlighting
         wordbox.pos0 = text_range.pos0
         wordbox.pos1 = text_range.pos1
     end
+
+    -- Fully trust getTextFromPositions()
+    if word_found and box_found then
+        return wordbox
+    else
+        return nil
+    end
+
+    -- If we ever want to fallback to getWordFromPositions()
+    --[[
+    local word = self._document:getWordFromPosition(pos.x, pos.y)
+    logger.warn("CreDocument: get word box", word)
+    if not word_found then
+        wordbox.word = word.word
+    end
+    if not box_found then
+        if word.word then
+            wordbox.sbox = Geom:new{
+                x = word.x0,
+                y = word.y0,
+                w = word.x1 - word.x0,
+                h = word.y1 - word.y0,
+            }
+        else
+            -- dummy box
+            wordbox.sbox = Geom:new{
+                x = pos.x, y = pos.y,
+                w = 20, h = 20,
+            }
+        end
+    end
     return wordbox
+    ]]--
 end
 
 function CreDocument:getTextFromPositions(pos0, pos1)
@@ -439,7 +700,14 @@ function CreDocument:drawCurrentViewByPos(target, x, y, rect, pos)
 end
 
 function CreDocument:drawCurrentViewByPage(target, x, y, rect, page)
-    self._document:gotoPage(page)
+    if not self.no_page_sync then
+        -- Avoid syncing page when this flag is set, when selecting text
+        -- across pages in 2-page mode and flipping half the screen
+        -- (currently only set by ReaderHighlight:onHoldPan())
+        -- self._document:gotoPage(page)
+        -- This allows this method to not be cached by cre call cache
+        self:gotoPage(page)
+    end
     self:drawCurrentView(target, x, y, rect)
 end
 
@@ -496,8 +764,9 @@ function CreDocument:getScreenPositionFromXPointer(xp)
     if self._view_mode == self.PAGE_VIEW_MODE then
         if self:getVisiblePageCount() > 1 then
             -- Correct coordinates if on the 2nd page in 2-pages mode
-            local next_page = self:getCurrentPage() + 1
-            if next_page <= self:getPageCount() then
+            -- getPageStartY() and getPageOffsetX() expects internal page numbers
+            local next_page = self:getCurrentPage(true) + 1
+            if next_page <= self:getPageCount(true) then
                 local next_top_y = self._document:getPageStartY(next_page)
                 if doc_y >= next_top_y then
                     screen_y = doc_y - next_top_y
@@ -577,9 +846,9 @@ function CreDocument:gotoPos(pos)
     self._document:gotoPos(pos)
 end
 
-function CreDocument:gotoPage(page)
-    logger.dbg("CreDocument: goto page", page)
-    self._document:gotoPage(page)
+function CreDocument:gotoPage(page, internal)
+    logger.dbg("CreDocument: goto page", page, "flow", self:getPageFlow(page))
+    self._document:gotoPage(page, internal)
 end
 
 function CreDocument:gotoLink(link)
@@ -597,8 +866,8 @@ function CreDocument:goForward(link)
     self._document:goForward()
 end
 
-function CreDocument:getCurrentPage()
-    return self._document:getCurrentPage()
+function CreDocument:getCurrentPage(internal)
+    return self._document:getCurrentPage(internal)
 end
 
 function CreDocument:setFontFace(new_font_face)
@@ -665,7 +934,7 @@ function CreDocument:setupFallbackFontFaces()
     -- names than ',' or ';', without the need to have to use quotes.
     local s_fallbacks = table.concat(fallbacks, "|")
     logger.dbg("CreDocument: set fallback font faces:", s_fallbacks)
-    self._document:setStringProperty("crengine.font.fallback.face", s_fallbacks)
+    self._document:setStringProperty("crengine.font.fallback.faces", s_fallbacks)
 end
 
 -- To use the new crengine language typography facilities (hyphenation, line breaking,
@@ -766,6 +1035,9 @@ function CreDocument:setViewMode(new_mode)
             self._view_mode = self.PAGE_VIEW_MODE
         end
         self._document:setViewMode(self._view_mode)
+        if self.hide_nonlinear_flows then
+            self:cacheFlows()
+        end
     end
 end
 
@@ -888,13 +1160,20 @@ function CreDocument:setTxtPreFormatted(enabled)
     self._document:setIntProperty("crengine.file.txt.preformatted", enabled)
 end
 
+-- get crengine internal visible page count (to be used when doing specific
+-- screen position handling)
 function CreDocument:getVisiblePageCount()
     return self._document:getVisiblePageCount()
 end
 
 function CreDocument:setVisiblePageCount(new_count)
     logger.dbg("CreDocument: set visible page count", new_count)
-    self._document:setVisiblePageCount(new_count)
+    self._document:setVisiblePageCount(new_count, false)
+end
+
+-- get visible page number count (to be used when only interested in page numbers)
+function CreDocument:getVisiblePageNumberCount()
+    return self._document:getVisiblePageNumberCount()
 end
 
 function CreDocument:setBatteryState(state)
@@ -1015,6 +1294,7 @@ end
 
 function CreDocument:register(registry)
     registry:addProvider("azw", "application/vnd.amazon.mobi8-ebook", self, 90)
+    registry:addProvider("azw", "application/x-mobi8-ebook", self, 90) -- Alternative mimetype for OPDS.
     registry:addProvider("chm", "application/vnd.ms-htmlhelp", self, 90)
     registry:addProvider("doc", "application/msword", self, 90)
     registry:addProvider("docx", "application/vnd.openxmlformats-officedocument.wordprocessingml.document", self, 90)
@@ -1022,6 +1302,7 @@ function CreDocument:register(registry)
     registry:addProvider("epub3", "application/epub+zip", self, 100)
     registry:addProvider("fb2", "application/fb2", self, 90)
     registry:addProvider("fb2.zip", "application/zip", self, 90)
+    registry:addProvider("fb2.zip", "application/fb2+zip", self, 90) -- Alternative mimetype for OPDS.
     registry:addProvider("fb3", "application/fb3", self, 90)
     registry:addProvider("htm", "text/html", self, 100)
     registry:addProvider("html", "text/html", self, 100)
@@ -1048,6 +1329,12 @@ function CreDocument:register(registry)
     registry:addProvider("sh", "application/x-shellscript", self, 90)
     registry:addProvider("py", "text/x-python", self, 90)
 end
+
+-- no-op that will be wrapped by setupCallCache
+function CreDocument:resetCallCache() end
+
+-- no-op that will be wrapped by setupCallCache
+function CreDocument:resetBufferCache() end
 
 -- Optimise usage of some of the above methods by caching their results,
 -- either globally, or per page/pos for those whose result may depend on
@@ -1259,6 +1546,7 @@ function CreDocument:setupCallCache()
             local cache_global = false
             local set_tag = nil
             local set_arg = nil
+            local set_arg2 = nil
             local is_cached = false
 
             -- Assume all set* may change rendering
@@ -1268,6 +1556,8 @@ function CreDocument:setupCallCache()
             elseif name:sub(1,6) == "update" then add_reset = true
             elseif name:sub(1,6) == "enable" then add_reset = true
             elseif name == "zoomFont" then add_reset = true -- not used by koreader
+            elseif name == "resetCallCache" then add_reset = true
+            elseif name == "cacheFlows" then add_reset = true
 
             -- These may have crengine do native highlight or unhighlight
             -- (we could keep the original buffer and use a scratch buffer while
@@ -1277,21 +1567,27 @@ function CreDocument:setupCallCache()
             elseif name == "getWordFromPosition" then add_buffer_trash = true
             elseif name == "getTextFromPositions" then add_buffer_trash = true
             elseif name == "findText" then add_buffer_trash = true
+            elseif name == "resetBufferCache" then add_buffer_trash = true
 
             -- These may change page/pos
-            elseif name == "gotoPage" then set_tag = "page" ; set_arg = 2
+            elseif name == "gotoPage" then set_tag = "page" ; set_arg = 2 ; set_arg2 = 3
             elseif name == "gotoPos" then set_tag = "pos" ; set_arg = 2
-            elseif name == "drawCurrentViewByPage" then set_tag = "page" ; set_arg = 6
             elseif name == "drawCurrentViewByPos" then set_tag = "pos" ; set_arg = 6
+            -- elseif name == "drawCurrentViewByPage" then set_tag = "page" ; set_arg = 6
+            -- drawCurrentViewByPage() has some tweaks when browsing half-pages for
+            -- text selection in two-pages mode: no need to wrap it, as it uses
+            -- internally 2 other functions that are themselves wrapped
+
             -- gotoXPointer() is for cre internal fixup, we always use gotoPage/Pos
             -- (goBack, goForward, gotoLink are not used)
 
-            -- For some, we prefer no cache (if they costs nothing, return some huge
+            -- For some, we prefer no cache (if they cost nothing, return some huge
             -- data that we'd rather not cache, are called with many different args,
             -- or we'd rather have up to date crengine state)
             elseif name == "getCurrentPage" then no_wrap = true
             elseif name == "getCurrentPos" then no_wrap = true
             elseif name == "getVisiblePageCount" then no_wrap = true
+            elseif name == "getVisiblePageNumberCount" then no_wrap = true
             elseif name == "getCoverPageImage" then no_wrap = true
             elseif name == "getDocumentFileContent" then no_wrap = true
             elseif name == "getHTMLFromXPointer" then no_wrap = true
@@ -1309,6 +1605,11 @@ function CreDocument:setupCallCache()
             elseif name == "getCacheFilePath" then no_wrap = true
             elseif name == "getStatistics" then no_wrap = true
             elseif name == "getNormalizedXPointer" then no_wrap = true
+            elseif name == "getNextPage" then no_wrap = true
+            elseif name == "getPrevPage" then no_wrap = true
+            elseif name == "getPageFlow" then no_wrap = true
+            elseif name == "getPageNumberInFlow" then no_wrap = true
+            elseif name == "getTotalPagesLeft" then no_wrap = true
 
             -- Some get* have different results by page/pos
             elseif name == "getLinkFromPosition" then cache_by_tag = true
@@ -1344,6 +1645,12 @@ function CreDocument:setupCallCache()
                 self[name] = function(...)
                     if do_log then logger.dbg("callCache:", name, "setting tag") end
                     local val = select(set_arg, ...)
+                    if set_arg2 then
+                        local val2 = select(set_arg2, ...)
+                        if val2 ~= nil then
+                            val = val .. tostring(val2)
+                        end
+                    end
                     self._callCacheSetCurrentTag(set_tag .. val)
                     return func(...)
                 end

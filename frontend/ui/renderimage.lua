@@ -2,12 +2,15 @@
 Image rendering module.
 ]]
 
+local Blitbuffer = require("ffi/blitbuffer")
+local Math = require("optmath")
 local ffi = require("ffi")
 local logger = require("logger")
 
 -- Will be loaded when needed
 local Mupdf = nil
 local Pic = nil
+local NnSVG = nil
 
 local RenderImage = {}
 
@@ -99,7 +102,7 @@ function RenderImage:renderGifImageDataWithGifLib(data, size, want_frames, width
     if want_frames and nb_frames > 1 then
         -- Returns a regular table, with functions (returning the BlitBuffer)
         -- as values. Users will have to check via type() and call them.
-        -- (our luajit does not support __len via metatable, otherwise we
+        -- (The __len metamethod is a Lua 5.2 feature, otherwise we
         -- could have used setmetatable to avoid creating all the functions)
         local frames = {}
         -- As we don't cache the bb we build on the fly, let caller know it
@@ -115,27 +118,30 @@ function RenderImage:renderGifImageDataWithGifLib(data, size, want_frames, width
             end)
         end
         -- We can't close our GifDocument as long as we may fetch some
-        -- frame: we need to delay it till 'frames' is no more used.
+        -- frame: we need to delay it till 'frames' is no longer used.
         frames.gif_close_needed = true
-        -- Should happen with that, but __gc seems never called...
-        frames = setmetatable(frames, {
-            __gc = function()
-                logger.dbg("frames.gc() called, closing GifDocument")
-                if frames.gif_close_needed then
-                    gif:close()
-                    frames.gif_close_needed = nil
-                end
-            end
-        })
-        -- so, also set this method, so that ImageViewer can explicitely
-        -- call it onClose.
-        frames.free = function()
-            logger.dbg("frames.free() called, closing GifDocument")
-            if frames.gif_close_needed then
-                gif:close()
-                frames.gif_close_needed = nil
+        -- Since frames is a plain table, __gc won't work on Lua 5.1/LuaJIT,
+        -- not without a little help from the newproxy hack...
+        frames.gif = gif
+        local frames_mt = {}
+        function frames_mt:__gc()
+            logger.dbg("frames.gc() called, closing GifDocument", self.gif)
+            if self.gif_close_needed then
+                self.gif:close()
+                self.gif_close_needed = nil
             end
         end
+        -- Much like our other stuff, when we're puzzled about __gc, we do it manually!
+        -- So, also set this method, so that ImageViewer can explicitely call it onClose.
+        function frames:free()
+            logger.dbg("frames.free() called, closing GifDocument", self.gif)
+            if self.gif_close_needed then
+                self.gif:close()
+                self.gif_close_needed = nil
+            end
+        end
+        local setmetatable = require("ffi/__gc")
+        setmetatable(frames, frames_mt)
         return frames
     else
         local page = gif:openPage(1)
@@ -182,6 +188,112 @@ function RenderImage:scaleBlitBuffer(bb, width, height, free_orig_bb)
         bb:free()
     end
     return scaled_bb
+end
+
+--- Renders SVG image file as a BlitBuffer with the best renderer
+--
+-- @string filename image file path
+-- @int width requested width
+-- @int height requested height
+-- @number zoom requested zoom
+-- @treturn BlitBuffer
+function RenderImage:renderSVGImageFile(filename, width, height, zoom)
+    if self.RENDER_SVG_WITH_NANOSVG then
+        return self:renderSVGImageFileWithNanoSVG(filename, width, height, zoom)
+    else
+        return self:renderSVGImageFileWithMupdf(filename, width, height, zoom)
+    end
+end
+
+-- For now (with our old MuPDF 1.13), NanoSVG is the best renderer
+-- Note that both renderers currently enforce keeping the image's
+-- original aspect ratio.
+RenderImage.RENDER_SVG_WITH_NANOSVG = true
+
+function RenderImage:renderSVGImageFileWithNanoSVG(filename, width, height, zoom)
+    if not NnSVG then
+        NnSVG = require("libs/libkoreader-nnsvg")
+    end
+    local svg_image = NnSVG.new(filename)
+    local native_w, native_h = svg_image:getSize()
+    if not zoom then
+        if width and height then
+            -- Original aspect ratio will be kept, we might have
+            -- to center the SVG inside the target width/height
+            zoom = math.min(width/native_w, height/native_h)
+        elseif width then
+            zoom = width/native_w
+        elseif height then
+            zoom = height/native_h
+        else
+            zoom = 1
+        end
+    end
+    -- (Be sure we use integers; using floats can cause glitches)
+    local inner_w = math.ceil(zoom * native_w)
+    local inner_h = math.ceil(zoom * native_h)
+    local offset_x = 0
+    local offset_y = 0
+    if not width then
+        width = inner_w
+    elseif inner_w < width then
+        offset_x = Math.round((width - inner_w) / 2)
+    end
+    if not height then
+        height = inner_h
+    elseif inner_h < height then
+        offset_y = Math.round((height - inner_h) / 2)
+    end
+    logger.dbg("renderSVG", filename, zoom, native_w, native_h, ">", width, height, offset_x, offset_y)
+    local bb = Blitbuffer.new(width, height, Blitbuffer.TYPE_BBRGB32)
+    svg_image:drawTo(bb, zoom, offset_x, offset_y)
+    svg_image:free()
+    return bb, true -- is_straight_alpha=true
+end
+
+function RenderImage:renderSVGImageFileWithMupdf(filename, width, height, zoom)
+    local ok, document = pcall(Mupdf.openDocument, filename)
+    if not ok then
+        return
+    end
+    -- document:layoutDocument(width, height, 20) -- does not change anything
+    if document:getPages() <= 0 then
+        return
+    end
+    local page = document:openPage(1)
+    local DrawContext = require("ffi/drawcontext")
+    local dc = DrawContext.new()
+    local native_w, native_h = page:getSize(dc)
+    if not zoom then
+        if width and height then
+            zoom = math.min(width/native_w, height/native_h)
+        elseif width then
+            zoom = width/native_w
+        elseif height then
+            zoom = height/native_h
+        else
+            zoom = 1
+        end
+    end
+    if not width or not height then
+        width = zoom * native_w
+        height = zoom * native_h
+    end
+    width = math.ceil(width)
+    height = math.ceil(height)
+    logger.dbg("renderSVG", filename, zoom, native_w, native_h, ">", width, height)
+    dc:setZoom(zoom)
+    -- local bb = page:draw_new(dc, width, height, 0, 0)
+    -- MuPDF or our FFI may fail on some icons (appbar.page.fit),
+    -- avoid a crash and return a blank and black image
+    local rendered, bb = pcall(page.draw_new, page, dc, width, height, 0, 0)
+    if not rendered then
+        logger.warn("MuPDF renderSVG error:", bb)
+        bb = Blitbuffer.new(width, height, Blitbuffer.TYPE_BBRGB32)
+    end
+    page:close()
+    document:close()
+    return bb -- pre-multiplied alpha: no is_straight_alpha=true
 end
 
 return RenderImage

@@ -13,32 +13,22 @@ local InputDialog = require("ui/widget/inputdialog")
 local InfoMessage = require("ui/widget/infomessage")
 local InputContainer = require("ui/widget/container/inputcontainer")
 local Menu = require("ui/widget/menu")
+local Persist = require("persist")
 local Screen = require("device").screen
+local Size = require("ui/size")
+local TimeVal = require("ui/timeval")
 local UIManager = require("ui/uimanager")
 local logger = require("logger")
-local socket = require("socket")
 local util = require("util")
 local _ = require("gettext")
 local T = require("ffi/util").template
-
--- cache files
-local libraries_file = "calibre-libraries.lua"
-local metadata_file = "calibre-books.lua"
-
--- loads a table from disk
-local function loadTable(path)
-    local ok, data = pcall(dofile, path)
-    if ok then
-        return data
-    else
-        return nil, data
-    end
-end
 
 -- get root dir for disk scans
 local function getDefaultRootDir()
     if Device:isCervantes() or Device:isKobo() then
         return "/mnt"
+    elseif Device:isEmulator() then
+        return lfs.currentdir()
     else
         return Device.home_dir or lfs.currentdir()
     end
@@ -57,16 +47,8 @@ local function getAllMetadata(t)
                 end
             end
             for _, book in ipairs(CalibreMetadata.books) do
-                local slim_book = {}
-                slim_book.title = book.title
-                slim_book.lpath = book.lpath
-                slim_book.authors = book.authors
-                slim_book.series = book.series
-                slim_book.series_index = book.series_index
-                slim_book.tags = book.tags
-                slim_book.size = book.size
-                slim_book.rootpath = path
-                table.insert(books, #books + 1, slim_book)
+                book.rootpath = path
+                table.insert(books, #books + 1, book)
             end
             CalibreMetadata:clean()
         end
@@ -115,9 +97,11 @@ end
 local function searchByTag(t, query, case_insensitive)
     local freq = {}
     for _, book in ipairs(t) do
-        for __, tag in ipairs(book.tags) do
-            if match(tag, query, case_insensitive) then
-                freq[tag] = (freq[tag] or 0) + 1
+        if type(book.tags) == "table" then
+            for __, tag in ipairs(book.tags) do
+                if match(tag, query, case_insensitive) then
+                    freq[tag] = (freq[tag] or 0) + 1
+                end
             end
         end
     end
@@ -157,7 +141,7 @@ local function getBookInfo(book)
     -- all entries can be empty, except size, which is always filled by calibre.
     local title = _("Title:") .. " " .. book.title or "-"
     local authors = _("Author(s):") .. " " .. getEntries(book.authors) or "-"
-    local size = _("Size:") .. " " .. string.format("%4.1fM", book.size/1024/1024)
+    local size = _("Size:") .. " " .. util.getFriendlySize(book.size) or _("Unknown")
     local tags = getEntries(book.tags)
     if tags then
         tags = _("Tags:") .. " " .. tags
@@ -183,13 +167,20 @@ local CalibreSearch = InputContainer:new{
         "find_by_authors",
         "find_by_path",
     },
-    user_libraries = DataStorage:getDataDir() .. "/cache/" .. libraries_file,
-    user_book_cache = DataStorage:getDataDir() .. "/cache/" .. metadata_file,
+
+    cache_libs = Persist:new{
+        path = DataStorage:getDataDir() .. "/cache/calibre-libraries.lua",
+    },
+
+    cache_books = Persist:new{
+        path = DataStorage:getDataDir() .. "/cache/calibre-books.dat",
+        codec = "bitser",
+    },
 }
 
 function CalibreSearch:ShowSearch()
     self.search_dialog = InputDialog:new{
-        title = _("Search books"),
+        title = _("Calibre metadata search"),
         input = self.search_value,
         buttons = {
             {
@@ -223,7 +214,7 @@ function CalibreSearch:ShowSearch()
                 },
                 {
                     -- @translators Search for books in calibre Library, via on-device metadata (as setup by Calibre's 'Send To Device').
-                    text = _("Find books"),
+                    text = _("Search books"),
                     enabled = true,
                     callback = function()
                         self.search_value = self.search_dialog:getInputText()
@@ -306,12 +297,12 @@ end
 
 -- find books, series or tags
 function CalibreSearch:find(option)
-    for _, opt in pairs(self.search_options) do
+    for _, opt in ipairs(self.search_options) do
         self[opt] = G_reader_settings:nilOrTrue("calibre_search_"..opt)
     end
 
     if #self.libraries == 0 then
-        local libs, err = loadTable(self.user_libraries)
+        local libs, err = self.cache_libs:load()
         if not libs then
             logger.warn("no calibre libraries", err)
             self:prompt(_("No calibre libraries"))
@@ -327,22 +318,21 @@ function CalibreSearch:find(option)
     -- this shouldn't happen unless the user disabled all libraries or they are empty.
     if #self.books == 0 then
         logger.warn("no metadata to search, aborting")
-        self:prompt(_("No metadata found"))
+        self:prompt(_("No results in metadata"))
         return
     end
 
     -- measure time elapsed searching
-    local start = socket.gettime()
+    local start = TimeVal:now()
     if option == "find" then
-        local books = self:findBooks(self.books, self.search_value)
+        local books = self:findBooks(self.search_value)
         local result = self:bookCatalog(books)
         self:showresults(result)
     else
         self:browse(option,1)
     end
-    local elapsed = socket.gettime() - start
-    logger.info(string.format("search done in %f milliseconds (%s, %s, %s, %s, %s)",
-        elapsed * 1000,
+    logger.info(string.format("search done in %.3f milliseconds (%s, %s, %s, %s, %s)",
+        (TimeVal:now() - start):tomsecs(),
         option == "find" and "books" or option,
         "case sensitive: " .. tostring(not self.case_insensitive),
         "title: " .. tostring(self.find_by_title),
@@ -351,7 +341,7 @@ function CalibreSearch:find(option)
 end
 
 -- find books with current search options
-function CalibreSearch:findBooks(t, query)
+function CalibreSearch:findBooks(query)
     -- handle case sensitivity
     local function bookMatch(s, p)
         if not s or not p then return false end
@@ -380,7 +370,7 @@ function CalibreSearch:findBooks(t, query)
     end
     -- performs a book search
     local results = {}
-    for i, book in ipairs(t) do
+    for i, book in ipairs(self.books) do
         if bookSearch(book, query) then
             table.insert(results, #results + 1, book)
         end
@@ -394,8 +384,8 @@ function CalibreSearch:browse(option, run, chosen)
         dimen = Screen:getSize(),
     }
     self.search_menu = Menu:new{
-        width = Screen:getWidth()-15,
-        height = Screen:getHeight()-15,
+        width = Screen:getWidth() - (Size.margin.fullscreen_popout * 2),
+        height = Screen:getHeight() - (Size.margin.fullscreen_popout * 2),
         show_parent = menu_container,
         onMenuHold = self.onMenuHold,
         cface = Font:getFace("smallinfofont"),
@@ -448,14 +438,14 @@ end
 -- show search results
 function CalibreSearch:showresults(t, title)
     if not title then
-        title = _("Search Results")
+        title = _("Search results")
     end
     local menu_container = CenterContainer:new{
         dimen = Screen:getSize(),
     }
     self.search_menu = Menu:new{
-        width = Screen:getWidth()-15,
-        height = Screen:getHeight()-15,
+        width = Screen:getWidth() - (Size.margin.fullscreen_popout * 2),
+        height = Screen:getHeight() - (Size.margin.fullscreen_popout * 2),
         show_parent = menu_container,
         onMenuHold = self.onMenuHold,
         cface = Font:getFace("smallinfofont"),
@@ -483,14 +473,8 @@ function CalibreSearch:prompt(message)
         ok_text = _("Scan") .. " " .. rootdir,
         ok_callback = function()
             self.libraries = {}
-            self.last_scan = {}
-            self:findCalibre(rootdir)
-            local paths = ""
-            for i, dir in ipairs(self.last_scan) do
-                self.libraries[dir.path] = true
-                paths = paths .. "\n" .. i .. ": " .. dir.path
-            end
-            local count = #self.last_scan
+            local count, paths = self:scan(rootdir)
+
             -- append current wireless dir if it wasn't found on the scan
             -- this will happen if it is in a nested dir.
             local inbox_dir = G_reader_settings:readSetting("inbox_dir")
@@ -501,7 +485,16 @@ function CalibreSearch:prompt(message)
                     paths = paths .. "\n" .. count .. ": " .. inbox_dir
                 end
             end
-            util.dumpTable(self.libraries, self.user_libraries)
+
+            -- append libraries in different volumes
+            local ok, sd_path = Device:hasExternalSD()
+            if ok then
+                local sd_count, sd_paths = self:scan(sd_path)
+                count = count + sd_count
+                paths = paths .. "\n" .. _("SD card") .. ": " .. sd_paths
+            end
+
+            self.cache_libs:save(self.libraries)
             self:invalidateCache()
             self.books = self:getMetadata()
             local info_text
@@ -513,6 +506,17 @@ function CalibreSearch:prompt(message)
             UIManager:show(InfoMessage:new{ text = info_text })
         end,
     })
+end
+
+function CalibreSearch:scan(rootdir)
+    self.last_scan = {}
+    self:findCalibre(rootdir)
+    local paths = ""
+    for i, dir in ipairs(self.last_scan) do
+        self.libraries[dir.path] = true
+        paths = paths .. "\n" .. i .. ": " .. dir.path
+    end
+    return #self.last_scan, paths
 end
 
 -- find all calibre libraries under a given root dir
@@ -545,24 +549,26 @@ end
 
 -- invalidate current cache
 function CalibreSearch:invalidateCache()
-    util.removeFile(self.user_book_cache)
+    self.cache_books:delete()
     self.books = {}
 end
 
 -- get metadata from cache or calibre files
 function CalibreSearch:getMetadata()
-    local start = socket.gettime()
-    local template = "metadata: %d books imported from %s in %f milliseconds"
+    local start = TimeVal:now()
+    local template = "metadata: %d books imported from %s in %.3f milliseconds"
 
     -- try to load metadata from cache
     if self.cache_metadata then
         local function cacheIsNewer(timestamp)
-            if not timestamp then return false end
+            local file_timestamp = self.cache_books:timestamp()
+            if not timestamp or not file_timestamp then return false end
             local Y, M, D, h, m, s = timestamp:match("(%d+)-(%d+)-(%d+)T(%d+):(%d+):(%d+)")
             local date = os.time({year = Y, month = M, day = D, hour = h, min = m, sec = s})
-            return lfs.attributes(self.user_book_cache, "modification") > date
+            return file_timestamp > date
         end
-        local cache, err = loadTable(self.user_book_cache)
+
+        local cache, err = self.cache_books:load()
         if not cache then
             logger.warn("invalid cache:", err)
         else
@@ -574,8 +580,7 @@ function CalibreSearch:getMetadata()
                 end
             end
             if is_newer then
-                local elapsed = socket.gettime() - start
-                logger.info(string.format(template, #cache, "cache", elapsed * 1000))
+                logger.info(string.format(template, #cache, "cache", (TimeVal:now() - start):tomsecs()))
                 return cache
             else
                 logger.warn("cache is older than metadata, ignoring it")
@@ -586,7 +591,7 @@ function CalibreSearch:getMetadata()
     -- try to load metadata from calibre files and dump it to cache file, if enabled.
     local books = getAllMetadata(self.libraries)
     if self.cache_metadata then
-        local dump = {}
+        local serialized_table = {}
         local function removeNull(t)
             for _, key in ipairs({"series", "series_index"}) do
                 if type(t[key]) == "function" then
@@ -596,12 +601,11 @@ function CalibreSearch:getMetadata()
             return t
         end
         for index, book in ipairs(books) do
-            table.insert(dump, index, removeNull(book))
+            table.insert(serialized_table, index, removeNull(book))
         end
-        util.dumpTable(dump, self.user_book_cache)
+        self.cache_books:save(serialized_table)
     end
-    local elapsed = socket.gettime() - start
-    logger.info(string.format(template, #books, "calibre", elapsed * 1000))
+    logger.info(string.format(template, #books, "calibre", (TimeVal:now() - start):tomsecs()))
     return books
 end
 

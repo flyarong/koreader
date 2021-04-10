@@ -45,9 +45,8 @@ common_info.about = {
     keep_menu_open = true,
     callback = function()
         UIManager:show(InfoMessage:new{
-            text = T(_("KOReader %1\n\nA document viewer for E Ink devices.\n\nLicensed under Affero GPL v3. All dependencies are free software.\n\nhttp://koreader.rocks/"), BD.ltr(Version:getCurrentRevision())),
-            icon_file = "resources/ko-icon.png",
-            alpha = true,
+            text = T(_("KOReader %1\n\nA document viewer for E Ink devices.\n\nLicensed under Affero GPL v3. All dependencies are free software.\n\nhttp://koreader.rocks"), BD.ltr(Version:getCurrentRevision())),
+            icon = "koreader",
         })
     end
 }

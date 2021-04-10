@@ -7,6 +7,7 @@ This module defines stubs for common methods.
 local logger = require("logger")
 local util = require("util")
 local _ = require("gettext")
+local T = require("ffi/util").template
 
 local function yes() return true end
 local function no() return false end
@@ -45,6 +46,7 @@ local Device = {
     needsTouchScreenProbe = no,
     hasClipboard = yes, -- generic internal clipboard on all devices
     hasEinkScreen = yes,
+    hasExternalSD = no, -- or other storage volume that cannot be accessed using the File Manager
     canHWDither = no,
     canHWInvert = no,
     canUseCBB = yes, -- The C BB maintains a 1:1 feature parity with the Lua BB, except that is has NO support for BB4, and limited support for BBRGB24
@@ -63,6 +65,10 @@ local Device = {
     canReboot = no,
     canPowerOff = no,
     canAssociateFileExtensions = no,
+
+    -- Start and stop text input mode (e.g. open soft keyboard, etc)
+    startTextInput = function() end,
+    stopTextInput = function() end,
 
     -- use these only as a last resort. We should abstract the functionality
     -- and have device dependent implementations in the corresponting
@@ -162,9 +168,8 @@ function Device:init()
 
     self.screen.isBGRFrameBuffer = self.hasBGRFrameBuffer
 
-    local low_pan_rate = G_reader_settings:readSetting("low_pan_rate")
-    if low_pan_rate ~= nil then
-        self.screen.low_pan_rate = low_pan_rate
+    if G_reader_settings:has("low_pan_rate") then
+        self.screen.low_pan_rate = G_reader_settings:readSetting("low_pan_rate")
     else
         self.screen.low_pan_rate = self.hasEinkScreen()
     end
@@ -203,9 +208,9 @@ function Device:init()
 end
 
 function Device:setScreenDPI(dpi_override)
+    -- Passing a nil resets to defaults and clears the override flag
     self.screen:setDPI(dpi_override)
     self.input.gesture_detector:init()
-    self.screen_dpi_override = dpi_override
 end
 
 function Device:getPowerDevice()
@@ -220,6 +225,7 @@ end
 
 -- Only used on platforms where we handle suspend ourselves.
 function Device:onPowerEvent(ev)
+    local Screensaver = require("ui/screensaver")
     if self.screen_saver_mode then
         if ev == "Power" or ev == "Resume" then
             if self.is_cover_closed then
@@ -241,7 +247,7 @@ function Device:onPowerEvent(ev)
                 if self.orig_rotation_mode then
                     self.screen:setRotationMode(self.orig_rotation_mode)
                 end
-                require("ui/screensaver"):close()
+                Screensaver:close()
                 if self:needsScreenRefreshAfterResume() then
                     UIManager:scheduleIn(1, function() self.screen:refreshFull() end)
                 end
@@ -260,14 +266,14 @@ function Device:onPowerEvent(ev)
         self.powerd:beforeSuspend()
         local UIManager = require("ui/uimanager")
         logger.dbg("Suspending...")
+        -- Let Screensaver set its widget up, so we get accurate info down the line in case fallbacks kick in...
+        Screensaver:setup()
         -- Mostly always suspend in Portrait/Inverted Portrait mode...
         -- ... except when we just show an InfoMessage or when the screensaver
         -- is disabled, as it plays badly with Landscape mode (c.f., #4098 and #5290).
         -- We also exclude full-screen widgets that work fine in Landscape mode,
         -- like ReadingProgress and BookStatus (c.f., #5724)
-        local screensaver_type = G_reader_settings:readSetting("screensaver_type")
-        if screensaver_type ~= "message" and screensaver_type ~= "disable" and
-           screensaver_type ~= "readingprogress" and screensaver_type ~= "bookstatus" then
+        if Screensaver:modeExpectsPortrait() then
             self.orig_rotation_mode = self.screen:getRotationMode()
             -- Leave Portrait & Inverted Portrait alone, that works just fine.
             if bit.band(self.orig_rotation_mode, 1) == 1 then
@@ -279,10 +285,8 @@ function Device:onPowerEvent(ev)
 
             -- On eInk, if we're using a screensaver mode that shows an image,
             -- flash the screen to white first, to eliminate ghosting.
-            if self:hasEinkScreen() and
-               screensaver_type == "cover" or screensaver_type == "random_image" or
-               screensaver_type == "image_file" then
-                if not G_reader_settings:isTrue("screensaver_no_background") then
+            if self:hasEinkScreen() and Screensaver:modeIsImage() then
+                if Screensaver:withBackground() then
                     self.screen:clear()
                 end
                 self.screen:refreshFull()
@@ -291,7 +295,7 @@ function Device:onPowerEvent(ev)
             -- nil it, in case user switched ScreenSaver modes during our lifetime.
             self.orig_rotation_mode = nil
         end
-        require("ui/screensaver"):show()
+        Screensaver:show()
         -- NOTE: show() will return well before the refresh ioctl is even *sent*:
         --       the only thing it's done is *enqueued* the refresh in UIManager's stack.
         --       Which is why the actual suspension needs to be delayed by suspend_wait_timeout,
@@ -485,6 +489,40 @@ function Device:canExecuteScript(file)
     if file_ext == "sh" or file_ext == "py"  then
         return true
     end
+end
+
+function Device:isValidPath(path)
+    return util.pathExists(path)
+end
+
+-- Device specific method to check if the startup script has been updated
+function Device:isStartupScriptUpToDate()
+    return true
+end
+
+--- Unpack an archive.
+-- Extract the contents of an archive, detecting its format by
+-- filename extension. Inspired by luarocks archive_unpack()
+-- @param archive string: Filename of archive.
+-- @param extract_to string: Destination directory.
+-- @return boolean or (boolean, string): true on success, false and an error message on failure.
+function Device:unpackArchive(archive, extract_to)
+    require("dbg").dassert(type(archive) == "string")
+    local BD = require("ui/bidi")
+    local ok
+    if archive:match("%.tar%.bz2$") or archive:match("%.tar%.gz$") or archive:match("%.tar%.lz$") or archive:match("%.tgz$") then
+        ok = self:untar(archive, extract_to)
+    else
+        return false, T(_("Couldn't extract archive:\n\n%1\n\nUnrecognized filename extension."), BD.filepath(archive))
+    end
+    if not ok then
+        return false, T(_("Extracting archive failed:\n\n%1"), BD.filepath(archive))
+    end
+    return true
+end
+
+function Device:untar(archive, extract_to)
+    return os.execute(("./tar xf %q -C %q"):format(archive, extract_to))
 end
 
 return Device

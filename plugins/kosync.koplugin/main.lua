@@ -15,7 +15,7 @@ local random = require("random")
 local T = require("ffi/util").template
 local _ = require("gettext")
 
-if not G_reader_settings:readSetting("device_id") then
+if G_reader_settings:hasNot("device_id") then
     G_reader_settings:saveSetting("device_id", random.uuid())
 end
 
@@ -104,6 +104,7 @@ function KOSync:onDispatcherRegisterActions()
 end
 
 function KOSync:onReaderReady()
+    --- @todo: Viable candidate for a port to the new readSetting API
     local settings = G_reader_settings:readSetting("kosync") or {}
     self.kosync_custom_server = settings.custom_server
     self.kosync_username = settings.username
@@ -693,13 +694,13 @@ function KOSync:saveSettings()
         auto_sync = self.kosync_auto_sync,
         pages_before_update = self.kosync_pages_before_update,
         whisper_forward =
-              (self.kosync_whisper_forward == SYNC_STRATEGY.DEFAULT_FORWARD
-               and nil
-               or self.kosync_whisper_forward),
+              (self.kosync_whisper_forward ~= SYNC_STRATEGY.DEFAULT_FORWARD
+               and self.kosync_whisper_forward
+               or nil),
         whisper_backward =
-              (self.kosync_whisper_backward == SYNC_STRATEGY.DEFAULT_BACKWARD
-               and nil
-               or self.kosync_whisper_backward),
+              (self.kosync_whisper_backward ~= SYNC_STRATEGY.DEFAULT_BACKWARD
+               and self.kosync_whisper_backward
+               or nil),
     }
     G_reader_settings:saveSetting("kosync", settings)
 end

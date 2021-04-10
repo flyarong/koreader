@@ -54,7 +54,7 @@ local external = require("device/thirdparty"):new{
 local Device = Generic:new{
     model = "SDL",
     isSDL = yes,
-    home_dir = os.getenv("HOME"),
+    home_dir = os.getenv("XDG_DOCUMENTS_DIR") or os.getenv("HOME"),
     hasBattery = SDL.getPowerInfo(),
     hasKeyboard = yes,
     hasKeys = yes,
@@ -65,6 +65,8 @@ local Device = Generic:new{
     hasColorScreen = yes,
     hasEinkScreen = no,
     canSuspend = no,
+    startTextInput = SDL.startTextInput,
+    stopTextInput = SDL.stopTextInput,
     canOpenLink = getLinkOpener,
     openLink = function(self, link)
         local enabled, tool = getLinkOpener()
@@ -88,7 +90,7 @@ local Device = Generic:new{
             external.when_back_callback = nil
         end
     end,
-    window = G_reader_settings:readSetting("sdl_window") or {},
+    window = G_reader_settings:readSetting("sdl_window", {}),
 }
 
 local AppImage = Device:new{
@@ -123,7 +125,6 @@ local Emulator = Device:new{
 local UbuntuTouch = Device:new{
     model = "UbuntuTouch",
     hasFrontlight = yes,
-    home_dir = nil,
 }
 
 function Device:init()
@@ -169,6 +170,7 @@ function Device:init()
             local UIManager = require("ui/uimanager")
 
             -- SDL events can remain cdata but are almost completely transparent
+            local SDL_TEXTINPUT = 771
             local SDL_MOUSEWHEEL = 1027
             local SDL_MULTIGESTURE = 2050
             local SDL_DROPFILE = 4096
@@ -254,9 +256,20 @@ function Device:init()
                 -- this triggers paged media like PDF and DjVu to redraw
                 -- CreDocument doesn't need it
                 UIManager:broadcastEvent(Event:new("RedrawCurrentPage"))
+
+                local FileManager = require("apps/filemanager/filemanager")
+                if FileManager.instance then
+                    FileManager.instance:reinit(FileManager.instance.path,
+                        FileManager.instance.focused_file)
+                    UIManager:setDirty(FileManager.instance.banner, function()
+                        return "ui", FileManager.instance.banner.dimen
+                    end)
+                end
             elseif ev.code == SDL_WINDOWEVENT_MOVED then
                 self.window.left = ev.value.data1
                 self.window.top = ev.value.data2
+            elseif ev.code == SDL_TEXTINPUT then
+                UIManager:broadcastEvent(Event:new("TextInput", ev.value))
             end
         end,
         hasClipboardText = function()
@@ -308,12 +321,6 @@ function Device:setDateTime(year, month, day, hour, min, sec)
     else
         return false
     end
-end
-
-function Device:exit()
-    G_reader_settings:saveSetting("sdl_window", self.window)
-    G_reader_settings:flush()
-    Generic.exit(self)
 end
 
 function Emulator:simulateSuspend()

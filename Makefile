@@ -26,7 +26,7 @@ ifeq ($(TARGET), android)
 	PATH:=$(ANDROID_TOOLCHAIN)/bin:$(PATH)
 endif
 
-MACHINE=$(shell PATH=$(PATH) $(CC) -dumpmachine 2>/dev/null)
+MACHINE=$(shell PATH='$(PATH)' $(CC) -dumpmachine 2>/dev/null)
 ifdef KODEBUG
 	MACHINE:=$(MACHINE)-debug
 	KODEDUG_SUFFIX:=-debug
@@ -355,17 +355,35 @@ androidupdate: all
 	# in runtime luajit-launcher's libluajit.so will be loaded
 	-rm $(INSTALL_DIR)/koreader/libs/libluajit.so
 
+	# shared libraries are stored as raw assets
+	rm -rf $(ANDROID_LAUNCHER_DIR)assets/libs
+	cp -pR $(INSTALL_DIR)/koreader/libs $(ANDROID_LAUNCHER_DIR)/assets
+
 	# assets are compressed manually and stored inside the APK.
-	cd $(INSTALL_DIR)/koreader && 7z a -l -mx=9 -mfb=256 -mmt=on \
-		../../$(ANDROID_LAUNCHER_DIR)/assets/module/koreader-$(VERSION).zip * \
+	cd $(INSTALL_DIR)/koreader && 7z a -l -m0=lzma2 -mx=9 \
+		../../$(ANDROID_LAUNCHER_DIR)/assets/module/koreader-$(VERSION).7z * \
+		-xr!*cache$ \
+		-xr!*clipboard$ \
+		-xr!*data/dict$ \
+		-xr!*data/tessdata$ \
+		-xr!*history$ \
+		-xr!*l10n/templates$ \
+		-xr!*libs$ \
+		-xr!*ota$ \
 		-xr!*resources/fonts* \
 		-xr!*resources/icons/src* \
+		-xr!*rocks/bin$ \
+		-xr!*rocks/lib/luarocks$ \
+		-xr!*screenshots$ \
 		-xr!*share/man* \
 		-xr!*spec$ \
+		-xr!*tools$ \
 		-xr!*COPYING$ \
+		-xr!*Makefile$ \
+		-xr!*NOTES.txt$ \
+		-xr!*NOTICE$ \
 		-xr!*README.md$ \
-		-xr!git$ \
-		-xr!gitiginore$ 
+		-xr'!.*'
 
 	# make the android APK
 	$(MAKE) -C $(ANDROID_LAUNCHER_DIR) $(if $(KODEBUG), debug, release) \
@@ -408,7 +426,7 @@ macosupdate: all
 		$(INSTALL_DIR)/bundle/Contents/MacOS \
 		$(INSTALL_DIR)/bundle/Contents/Resources
 
-	cp resources/koreader.icns $(INSTALL_DIR)/bundle/Contents/Resources/icon.icns
+	cp -pv $(MACOS_DIR)/koreader.icns $(INSTALL_DIR)/bundle/Contents/Resources/icon.icns
 	cp -LR $(INSTALL_DIR)/koreader $(INSTALL_DIR)/bundle/Contents
 	cp -pRv $(MACOS_DIR)/menu.xml $(INSTALL_DIR)/bundle/Contents/MainMenu.xib
 	ibtool --compile "$(INSTALL_DIR)/bundle/Contents/Resources/Base.lproj/MainMenu.nib" "$(INSTALL_DIR)/bundle/Contents/MainMenu.xib"
@@ -533,6 +551,9 @@ else ifeq ($(TARGET), debian-armel)
 else ifeq ($(TARGET), debian-armhf)
 	make debianupdate
 	$(CURDIR)/platform/debian/do_debian_package.sh $(INSTALL_DIR) armhf
+else ifeq ($(TARGET), debian-arm64)
+	make debianupdate
+	$(CURDIR)/platform/debian/do_debian_package.sh $(INSTALL_DIR) arm64
 else ifeq ($(TARGET), macos)
 	make macosupdate
 	$(CURDIR)/platform/mac/do_mac_bundle.sh $(INSTALL_DIR)

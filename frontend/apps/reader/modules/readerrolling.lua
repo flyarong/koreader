@@ -41,8 +41,7 @@ local band = bit.band
 --]]
 local ReaderRolling = InputContainer:new{
     pan_rate = 30,  -- default 30 ops, will be adjusted in readerui
-    old_doc_height = nil,
-    old_page = nil,
+    rendering_hash = 0,
     current_pos = 0,
     inverse_reading_order = nil,
     -- only used for page view mode
@@ -55,7 +54,8 @@ local ReaderRolling = InputContainer:new{
     -- With visible_pages=2, in 2-pages mode, ensure the first
     -- page is always odd or even (odd is logical to avoid a
     -- same page when turning first 2-pages set of document)
-    odd_or_even_first_page = 1 -- 1 = odd, 2 = even, nil or others = free
+    odd_or_even_first_page = 1, -- 1 = odd, 2 = even, nil or others = free
+    hide_nonlinear_flows = nil,
 }
 
 function ReaderRolling:init()
@@ -118,9 +118,8 @@ function ReaderRolling:init()
     end
 
     table.insert(self.ui.postInitCallback, function()
+        self.rendering_hash = self.ui.document:getDocumentRenderingHash()
         self.ui.document:_readMetadata()
-        self.old_doc_height = self.ui.document.info.doc_height
-        self.old_page = self.ui.document.info.number_of_pages
     end)
     table.insert(self.ui.postReaderCallback, function()
         self:updatePos()
@@ -140,9 +139,9 @@ function ReaderRolling:onReadSettings(config)
     -- and highlights with old XPATHs.
     -- (EPUB will use the same correct DOM code no matter what DOM version
     -- we request here.)
-    if not config:readSetting("cre_dom_version") then
+    if config:hasNot("cre_dom_version") then
         -- Not previously set, guess which DOM version to use
-        if config:readSetting("last_xpointer") then
+        if config:has("last_xpointer") then
             -- We have a last_xpointer: this book was previously opened
             -- with possibly a very old version: request the oldest
             config:saveSetting("cre_dom_version", self.ui.document:getOldestDomVersion())
@@ -167,7 +166,7 @@ function ReaderRolling:onReadSettings(config)
         self.ui.typeset:ensureSanerBlockRenderingFlags()
         -- And check if we can migrate to a newest DOM version after
         -- the book is loaded (unless the user told us not to).
-        if not config:readSetting("cre_keep_old_dom_version") then
+        if config:nilOrFalse("cre_keep_old_dom_version") then
             self.ui:registerPostReadyCallback(function()
                 self:checkXPointersAndProposeDOMVersionUpgrade()
             end)
@@ -206,17 +205,19 @@ function ReaderRolling:onReadSettings(config)
         self.setupXpointer = function()
             self.xpointer = self.ui.document:getXPointer()
             if self.view.view_mode == "page" then
-                self.ui:handleEvent(Event:new("PageUpdate", 1))
+                self.ui:handleEvent(Event:new("PageUpdate", self.ui.document:getNextPage(0)))
             end
         end
     end
-    self.show_overlap_enable = config:readSetting("show_overlap_enable")
-    if self.show_overlap_enable == nil then
+    if config:has("show_overlap_enable") then
+        self.show_overlap_enable = config:isTrue("show_overlap_enable")
+    else
         self.show_overlap_enable = DSHOWOVERLAP
     end
 
-    self.inverse_reading_order = config:readSetting("inverse_reading_order")
-    if self.inverse_reading_order == nil then
+    if config:has("inverse_reading_order") then
+        self.inverse_reading_order = config:isTrue("inverse_reading_order")
+    else
         self.inverse_reading_order = G_reader_settings:isTrue("inverse_reading_order")
     end
 
@@ -229,6 +230,13 @@ function ReaderRolling:onReadSettings(config)
     self.visible_pages = config:readSetting("visible_pages") or
         G_reader_settings:readSetting("copt_visible_pages") or 1
     self.ui.document:setVisiblePageCount(self.visible_pages)
+
+    if config:has("hide_nonlinear_flows") then
+        self.hide_nonlinear_flows = config:isTrue("hide_nonlinear_flows")
+    else
+        self.hide_nonlinear_flows = G_reader_settings:isTrue("hide_nonlinear_flows")
+    end
+    self.ui.document:setHideNonlinearFlows(self.hide_nonlinear_flows)
 
     -- Set a callback to allow showing load and rendering progress
     -- (this callback will be cleaned up by cre.cpp closeDocument(),
@@ -291,7 +299,7 @@ end
 
 function ReaderRolling:onSaveSettings()
     -- remove last_percent config since its deprecated
-    self.ui.doc_settings:saveSetting("last_percent", nil)
+    self.ui.doc_settings:delSetting("last_percent")
     self.ui.doc_settings:saveSetting("last_xpointer", self.xpointer)
     -- in scrolling mode, the document may already be closed,
     -- so we have to check the condition to avoid crash function self:getLastPercent()
@@ -302,10 +310,14 @@ function ReaderRolling:onSaveSettings()
     self.ui.doc_settings:saveSetting("show_overlap_enable", self.show_overlap_enable)
     self.ui.doc_settings:saveSetting("inverse_reading_order", self.inverse_reading_order)
     self.ui.doc_settings:saveSetting("visible_pages", self.visible_pages)
+    self.ui.doc_settings:saveSetting("hide_nonlinear_flows", self.hide_nonlinear_flows)
 end
 
 function ReaderRolling:onReaderReady()
     self:setupTouchZones()
+    if self.hide_nonlinear_flows then
+        self.ui.document:cacheFlows()
+    end
     self.setupXpointer()
 end
 
@@ -386,14 +398,14 @@ function ReaderRolling:addToMainMenu(menu_items)
                     return inverse_reading_order and _("LTR") or _("LTR (★)")
                 end,
                 choice1_callback = function()
-                     G_reader_settings:saveSetting("inverse_reading_order", false)
+                     G_reader_settings:makeFalse("inverse_reading_order")
                      if touchmenu_instance then touchmenu_instance:updateItems() end
                 end,
                 choice2_text_func = function()
                     return inverse_reading_order and _("RTL (★)") or _("RTL")
                 end,
                 choice2_callback = function()
-                    G_reader_settings:saveSetting("inverse_reading_order", true)
+                    G_reader_settings:makeTrue("inverse_reading_order")
                     if touchmenu_instance then touchmenu_instance:updateItems() end
                 end,
             })
@@ -414,7 +426,7 @@ You can set how many lines are shown.]])
             callback = function()
                 self.show_overlap_enable = not self.show_overlap_enable
                 if not self.show_overlap_enable then
-                    self.view:resetDimArea()
+                    self.view.dim_area:clear()
                 end
             end
         },
@@ -457,11 +469,36 @@ You can set how many lines are shown.]])
         help_text = _([[When page overlap is enabled, some lines from the previous pages are shown on the next page.]]),
         sub_item_table = page_overlap_menu,
     }
+    if self.ui.document:hasNonLinearFlows() then
+        local hide_nonlinear_text = _("When hide non-linear fragments is enabled, any non-linear fragments will be hidden from the normal page flow. Such fragments will always remain accessible through links, the table of contents and the 'Go to' dialog. This only works in single-page mode.")
+        menu_items.hide_nonlinear_flows = {
+            text = _("Hide non-linear fragments"),
+            enabled_func = function()
+                return self.view.view_mode == "page" and self.ui.document:getVisiblePageCount() == 1
+            end,
+            checked_func = function() return self.hide_nonlinear_flows end,
+            callback = function()
+                self:onToggleHideNonlinear()
+            end,
+            hold_callback = function()
+                UIManager:show(ConfirmBox:new{
+                    text = T(
+                        hide_nonlinear_text .. "\n\n" .. _("Set default hide non-linear fragments to %1?"),
+                        self.hide_nonlinear_flows and _("enabled") or _("disabled")
+                    ),
+                    ok_callback = function()
+                        G_reader_settings:saveSetting("hide_nonlinear_flows", self.hide_nonlinear_flows)
+                    end,
+                })
+            end,
+            help_text = hide_nonlinear_text,
+        }
+    end
 end
 
 function ReaderRolling:getLastPercent()
     if self.view.view_mode == "page" then
-        return self.current_page / self.old_page
+        return self.current_page / self.ui.document.info.number_of_pages
     else
         --- @fixme the calculated percent is not accurate in "scroll" mode.
         return self.ui.document:getPosFromXPointer(
@@ -524,10 +561,20 @@ function ReaderRolling:onResume()
 end
 
 function ReaderRolling:onGotoNextChapter()
-    local visible_page_count = self.ui.document:getVisiblePageCount()
+    local visible_page_count = self.ui.document:getVisiblePageNumberCount()
     local pageno = self.current_page + (visible_page_count > 1 and 1 or 0)
-    local new_page = self.ui.toc:getNextChapter(pageno, 0)
-    if new_page then
+    local new_page
+    if self.ui.document:hasHiddenFlows() then
+        -- Find next chapter start
+        new_page = self.ui.document:getNextPage(pageno)
+        while new_page > 0 do
+            if self.ui.toc:isChapterStart(new_page) then break end
+            new_page = self.ui.document:getNextPage(new_page)
+        end
+    else
+        new_page = self.ui.toc:getNextChapter(pageno) or 0
+    end
+    if new_page > 0 then
         self.ui.link:addCurrentLocationToStack()
         self:onGotoPage(new_page)
     end
@@ -536,8 +583,18 @@ end
 
 function ReaderRolling:onGotoPrevChapter()
     local pageno = self.current_page
-    local new_page = self.ui.toc:getPreviousChapter(pageno, 0)
-    if new_page then
+    local new_page
+    if self.ui.document:hasHiddenFlows() then
+        -- Find previous chapter start
+        new_page = self.ui.document:getPrevPage(pageno)
+        while new_page > 0 do
+            if self.ui.toc:isChapterStart(new_page) then break end
+            new_page = self.ui.document:getPrevPage(new_page)
+        end
+    else
+        new_page = self.ui.toc:getPreviousChapter(pageno) or 0
+    end
+    if new_page > 0 then
         self.ui.link:addCurrentLocationToStack()
         self:onGotoPage(new_page)
     end
@@ -590,8 +647,10 @@ function ReaderRolling:onGotoXPointer(xp, marker_xp)
     --   followed_link_marker = true: maker shown and not auto removed
     --   followed_link_marker = <number>: removed after <number> seconds
     -- (no real need for a menu item, the default is the finest)
-    local marker_setting = G_reader_settings:readSetting("followed_link_marker")
-    if marker_setting == nil then
+    local marker_setting
+    if G_reader_settings:has("followed_link_marker") then
+        marker_setting = G_reader_settings:readSetting("followed_link_marker")
+    else
         marker_setting = 1 -- default is: shown and removed after 1 second
     end
 
@@ -610,7 +669,7 @@ function ReaderRolling:onGotoXPointer(xp, marker_xp)
                     -- In the middle margin, on the right of text
                     -- Same trick as below, assuming page2_x is equal to page 1 right x
                     screen_x = math.floor(Screen:getWidth() * 0.5)
-                    local page2_x = self.ui.document:getPageOffsetX(self.ui.document:getCurrentPage()+1)
+                    local page2_x = self.ui.document:getPageOffsetX(self.ui.document:getCurrentPage(true)+1)
                     marker_w = page2_x + marker_w - screen_x
                     screen_x = screen_x - marker_w
                 else
@@ -624,7 +683,7 @@ function ReaderRolling:onGotoXPointer(xp, marker_xp)
                     -- This is a bit tricky with how the middle margin is sized
                     -- by crengine (see LVDocView::updateLayout() in lvdocview.cpp)
                     screen_x = math.floor(Screen:getWidth() * 0.5)
-                    local page2_x = self.ui.document:getPageOffsetX(self.ui.document:getCurrentPage()+1)
+                    local page2_x = self.ui.document:getPageOffsetX(self.ui.document:getCurrentPage(true)+1)
                     marker_w = page2_x + marker_w - screen_x
                 end
             end
@@ -713,7 +772,7 @@ function ReaderRolling:onGotoViewRel(diff)
             self.ui:handleEvent(Event:new("EndOfBook"))
         end
     elseif self.view.view_mode == "page" then
-        local page_count = self.ui.document:getVisiblePageCount()
+        local page_count = self.ui.document:getVisiblePageNumberCount()
         local old_page = self.current_page
         -- we're in paged mode, so round up
         if diff > 0 then
@@ -721,7 +780,23 @@ function ReaderRolling:onGotoViewRel(diff)
         else
             diff = math.floor(diff)
         end
-        self:_gotoPage(self.current_page + diff*page_count)
+        local new_page = self.current_page
+        if self.ui.document:hasHiddenFlows() then
+            local test_page
+            for i=1, math.abs(diff*page_count) do
+                if diff > 0 then
+                    test_page = self.ui.document:getNextPage(new_page)
+                else
+                    test_page = self.ui.document:getPrevPage(new_page)
+                end
+                if test_page > 0 then
+                    new_page = test_page
+                end
+            end
+        else
+            new_page = new_page + diff*page_count
+        end
+        self:_gotoPage(new_page)
         if diff > 0 and old_page == self.current_page then
             self.ui:handleEvent(Event:new("EndOfBook"))
         end
@@ -744,7 +819,6 @@ function ReaderRolling:onPanning(args, _)
 end
 
 function ReaderRolling:onZoom()
-    --- @todo Re-read doc_height info after font or lineheight changes.  05.06 2012 (houqp)
     self:updatePos()
 end
 
@@ -764,7 +838,7 @@ function ReaderRolling:onUpdatePos()
     -- so updatePos() has good info and can reposition
     -- the previous xpointer accurately:
     self.ui.document:getCurrentPos()
-    -- Otherwise, _readMetadata() would do that, but the positionning
+    -- Otherwise, _readMetadata() would do that, but the positioning
     -- would not work as expected, for some reason (it worked
     -- previously because of some bad setDirty() in ConfigDialog widgets
     -- that were triggering a full repaint of crengine (so, the needed
@@ -777,23 +851,23 @@ function ReaderRolling:updatePos()
         -- document closed since we were scheduleIn'ed
         return
     end
-    -- reread document height
-    self.ui.document:_readMetadata()
-    -- update self.current_pos if the height of document has been changed.
-    local new_height = self.ui.document.info.doc_height
-    local new_page = self.ui.document.info.number_of_pages
-    if self.old_doc_height ~= new_height or self.old_page ~= new_page then
+    -- Check if the document has been re-rendered
+    local new_rendering_hash = self.ui.document:getDocumentRenderingHash()
+    if new_rendering_hash ~= self.rendering_hash then
+        logger.dbg("rendering hash changed:", self.rendering_hash, ">", new_rendering_hash)
+        self.rendering_hash = new_rendering_hash
+        -- A few things like page numbers may have changed
+        self.ui.document:_readMetadata() -- get updated document height and nb of pages
+        if self.hide_nonlinear_flows then
+            self.ui.document:cacheFlows()
+        end
         self:_gotoXPointer(self.xpointer)
-        self.old_doc_height = new_height
-        self.old_page = new_page
         self.ui:handleEvent(Event:new("UpdateToc"))
-        self.view.footer:setTocMarkers(true)
-        self.view.footer:onUpdateFooter()
     end
-    self:updateTopStatusBarMarkers()
+    self:onUpdateTopStatusBarMarkers()
     UIManager:setDirty(self.view.dialog, "partial")
     -- Allow for the new rendering to be shown before possibly showing
-    -- the "Styles have changes..." ConfirmBox so the user can decide
+    -- the "Styles have changed..." ConfirmBox so the user can decide
     -- if it is really needed
     UIManager:scheduleIn(0.1, function ()
         self:onCheckDomStyleCoherence()
@@ -804,11 +878,9 @@ end
     switching screen mode should not change current page number
 --]]
 function ReaderRolling:onChangeViewMode()
+    self.rendering_hash = self.ui.document:getDocumentRenderingHash()
     self.ui.document:_readMetadata()
-    self.old_doc_height = self.ui.document.info.doc_height
-    self.old_page = self.ui.document.info.number_of_pages
     self.ui:handleEvent(Event:new("UpdateToc"))
-    self.view.footer:setTocMarkers(true)
     if self.xpointer then
         self:_gotoXPointer(self.xpointer)
         -- Ensure a whole screen refresh is always enqueued
@@ -824,7 +896,7 @@ function ReaderRolling:onRedrawCurrentView()
     if self.view.view_mode == "page" then
         self.ui:handleEvent(Event:new("PageUpdate", self.current_page))
     else
-        self.ui:handleEvent(Event:new("PosUpdate", self.current_pos))
+        self.ui:handleEvent(Event:new("PosUpdate", self.current_pos, self.ui.document:getCurrentPage()))
     end
     return true
 end
@@ -883,10 +955,10 @@ function ReaderRolling:_gotoPos(new_pos, do_dim_area)
         if self.current_pos > max_pos - self.ui.dimen.h/2 then
             -- Avoid a fully dimmed page when reaching end of document
             -- (the scroll would bump and not be a full page long)
-            self.view:resetDimArea()
+            self.view.dim_area:clear()
         end
     else
-        self.view:resetDimArea()
+        self.view.dim_area:clear()
     end
     self.ui.document:gotoPos(new_pos)
     -- The current page we get in scroll mode may be a bit innacurate,
@@ -903,8 +975,9 @@ function ReaderRolling:_gotoPercent(new_percent)
     end
 end
 
-function ReaderRolling:_gotoPage(new_page, free_first_page)
-    if self.ui.document:getVisiblePageCount() > 1 and not free_first_page then
+function ReaderRolling:_gotoPage(new_page, free_first_page, internal)
+    if self.ui.document:getVisiblePageCount() > 1 and not free_first_page
+            and (internal or self.ui.document:getVisiblePageNumberCount() == 2) then
         -- Ensure we always have the first of the two pages odd
         if self.odd_or_even_first_page == 1 then -- odd
             if band(new_page, 1) == 0 then
@@ -918,7 +991,7 @@ function ReaderRolling:_gotoPage(new_page, free_first_page)
             end
         end
     end
-    self.ui.document:gotoPage(new_page)
+    self.ui.document:gotoPage(new_page, internal)
     if self.view.view_mode == "page" then
         self.ui:handleEvent(Event:new("PageUpdate", self.ui.document:getCurrentPage()))
     else
@@ -945,16 +1018,15 @@ end
 --]]
 
 function ReaderRolling:onSetVisiblePages(visible_pages)
-    -- crengine may decide to not ensure the value we request
-    -- (for example, in 2-pages mode, it may stop being ensured
-    -- when we increase the font size up to a point where a line
-    -- would contain less that 20 glyphs).
-    -- crengine may enforce visible_page=1 when:
-    --   - not in page mode but in scroll mode
-    --   - screen w/h < 6/5
-    --   - w < 20*em
-    -- We nevertheless update the setting (that will saved) with what
-    -- the user has requested - and not what crengine has enforced.
+    -- By default, crengine may decide to not ensure the value we request
+    -- (for example, in 2-pages mode, it may stop being ensured when we
+    -- increase the font size up to a point where a line would contain
+    -- less that 20 glyphs).
+    -- But we have CreDocument:setVisiblePageCount() provide only_if_sane=false
+    -- so these checks are not done.
+    -- We nevertheless update the setting (that will be saved) with what
+    -- the user has requested - and not what crengine has enforced, and
+    -- always query crengine for if it ends up ensuring it or not.
     self.visible_pages = visible_pages
     local prev_visible_pages = self.ui.document:getVisiblePageCount()
     self.ui.document:setVisiblePageCount(visible_pages)
@@ -964,21 +1036,18 @@ function ReaderRolling:onSetVisiblePages(visible_pages)
     end
 end
 
-function ReaderRolling:onSetStatusLine(status_line, on_read_settings)
-    -- status_line values:
-    -- in crengine: 0=header enabled, 1=disabled
-    -- in koreader: 0=top status bar, 1=bottom mini bar
+function ReaderRolling:onSetStatusLine(status_line)
+    -- Enable or disable crengine header status line
+    -- Note that for crengine, 0=header enabled, 1=header disabled
     self.ui.document:setStatusLineProp(status_line)
     self.cre_top_bar_enabled = status_line == 0
-    if not on_read_settings then
-        -- Ignore this event when it is first sent by ReaderCoptListener
-        -- on book loading, so we stay with the saved footer settings
-        self.view.footer:setVisible(status_line == 1)
-    end
+    -- (We used to toggle the footer when toggling the top status bar,
+    -- but people seem to like having them both, and it feels more
+    -- practicable to have the independant.)
     self.ui:handleEvent(Event:new("UpdatePos"))
 end
 
-function ReaderRolling:updateTopStatusBarMarkers()
+function ReaderRolling:onUpdateTopStatusBarMarkers()
     if not self.cre_top_bar_enabled then
         return
     end
@@ -1215,11 +1284,14 @@ function ReaderRolling:checkXPointersAndProposeDOMVersionUpgrade()
         -- Switch to default block rendering mode if this book has it set to "legacy",
         -- unless the user had set the global mode to be "legacy".
         -- (see ReaderTypeset:onReadSettings() for the logic of block_rendering_mode)
-        local g_block_rendering_mode = G_reader_settings:readSetting("copt_block_rendering_mode")
+        local g_block_rendering_mode
+        if G_reader_settings:has("copt_block_rendering_mode") then
+            g_block_rendering_mode = G_reader_settings:readSetting("copt_block_rendering_mode")
+        else
+            -- nil means: use default
+            g_block_rendering_mode = 3 -- default in ReaderTypeset:onReadSettings()
+        end
         if g_block_rendering_mode ~= 0 then -- default is not "legacy"
-            if not g_block_rendering_mode then -- nil means: use default
-                g_block_rendering_mode = 3 -- default in ReaderTypeset:onReadSettings()
-            end
             -- This setting is actually saved by self.ui.document.configurable
             local block_rendering_mode = self.ui.document.configurable.block_rendering_mode
             if block_rendering_mode == 0 then
@@ -1279,7 +1351,7 @@ Note that %1 (out of %2) xpaths from your bookmarks and highlights have been nor
         }},
         cancel_text = _("Not for this book"),
         cancel_callback = function()
-            self.ui.doc_settings:saveSetting("cre_keep_old_dom_version", true)
+            self.ui.doc_settings:makeTrue("cre_keep_old_dom_version")
         end,
         ok_text = _("Upgrade now"),
         ok_callback = function()
@@ -1310,6 +1382,20 @@ Note that %1 (out of %2) xpaths from your bookmarks and highlights have been nor
     })
 end
 
+function ReaderRolling:onToggleHideNonlinear()
+    self.hide_nonlinear_flows = not self.hide_nonlinear_flows
+    self.ui.document:setHideNonlinearFlows(self.hide_nonlinear_flows)
+    -- The document may change due to forced pagebreaks between flows being
+    -- added or removed, so we need to find our location
+    self:onUpdatePos()
+    -- Even if the document doesn't change, we must ensure that the
+    -- flow and call caches are cleared, to get the right page numbers,
+    -- which may have changed, and the correct flow structure. Also,
+    -- the footer needs updating, and TOC markers may come or go.
+    self.ui.document:cacheFlows()
+    self.ui:handleEvent(Event:new("UpdateToc"))
+end
+
 -- Duplicated in ReaderPaging
 function ReaderRolling:onToggleReadingOrder()
     self.inverse_reading_order = not self.inverse_reading_order
@@ -1320,7 +1406,6 @@ function ReaderRolling:onToggleReadingOrder()
     end
     UIManager:show(Notification:new{
         text = is_rtl and _("RTL page turning.") or _("LTR page turning."),
-        timeout = 2.5,
     })
     return true
 end

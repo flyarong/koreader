@@ -48,10 +48,11 @@ function CoverMenu:updateItems(select_number)
     local old_dimen = self.dimen and self.dimen:copy()
     -- self.layout must be updated for focusmanager
     self.layout = {}
-    self.item_group:free() -- avoid memory leaks by calling free() on all our sub-widgets
     self.item_group:clear()
-    -- strange, best here if resetLayout() are done after _recalculateDimen(),
-    -- unlike what is done in menu.lua
+    -- NOTE: Our various _recalculateDimen overloads appear to have a stronger dependency
+    --       on the rest of the widget elements being properly laid-out,
+    --       so we have to run it *first*, unlike in Menu.
+    --       Otherwise, various layout issues arise (e.g., MosaicMenu's page_info is misaligned).
     self:_recalculateDimen()
     self.page_info:resetLayout()
     self.return_button:resetLayout()

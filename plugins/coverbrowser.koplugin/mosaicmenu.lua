@@ -10,6 +10,7 @@ local Geom = require("ui/geometry")
 local GestureRange = require("ui/gesturerange")
 local HorizontalGroup = require("ui/widget/horizontalgroup")
 local HorizontalSpan = require("ui/widget/horizontalspan")
+local IconWidget = require("ui/widget/iconwidget")
 local ImageWidget = require("ui/widget/imagewidget")
 local InfoMessage = require("ui/widget/infomessage")
 local InputContainer = require("ui/widget/container/inputcontainer")
@@ -97,7 +98,7 @@ local FakeCover = FrameContainer:new{
     height = nil,
     margin = 0,
     padding = 0,
-    bordersize = Size.line.thin,
+    bordersize = Size.border.thin,
     dim = nil,
     -- Provided filename, title and authors should not be BD wrapped
     filename = nil,
@@ -437,7 +438,7 @@ function MosaicMenuItem:update()
     -- We'll draw a border around cover images, it may not be
     -- needed with some covers, but it's nicer when cover is
     -- a pure white background (like rendered text page)
-    local border_size = 1
+    local border_size = Size.border.thin
     local max_img_w = dimen.w - 2*border_size
     local max_img_h = dimen.h - 2*border_size
     local cover_specs = {
@@ -459,7 +460,7 @@ function MosaicMenuItem:update()
         -- Directory : rounded corners
         local margin = Screen:scaleBySize(5) -- make directories less wide
         local padding = Screen:scaleBySize(5)
-        border_size = Screen:scaleBySize(2) -- make directories' borders larger
+        border_size = Size.border.thick -- make directories' borders larger
         local dimen_in = Geom:new{
             w = dimen.w - (margin + padding + border_size)*2,
             h = dimen.h - (margin + padding + border_size)*2
@@ -595,9 +596,11 @@ function MosaicMenuItem:update()
                 local series_mode = BookInfoManager:getSetting("series_mode")
                 local title_add, authors_add
                 if bookinfo.series then
-                    -- Shorten calibre series decimal number (#4.0 => #4)
-                    bookinfo.series = bookinfo.series:gsub("(#%d+)%.0$", "%1")
-                    bookinfo.series = BD.auto(bookinfo.series)
+                    if bookinfo.series_index then
+                        bookinfo.series = BD.auto(bookinfo.series .. " #" .. bookinfo.series_index)
+                    else
+                        bookinfo.series = BD.auto(bookinfo.series)
+                    end
                     if series_mode == "append_series_to_title" then
                         if bookinfo.title then
                             title_add = " - " .. bookinfo.series
@@ -794,13 +797,7 @@ end
 local MosaicMenu = {}
 
 function MosaicMenu:_recalculateDimen()
-    self.dimen.w = self.width
-    self.dimen.h = self.height or Screen:getHeight()
-
-    local portrait_mode = true
-    if Screen:getWidth() > Screen:getHeight() then
-        portrait_mode = false
-    end
+    local portrait_mode = Screen:getWidth() <= Screen:getHeight()
     -- 3 x 3 grid by default if not initially provided (4 x 2 in landscape mode)
     if portrait_mode then
         self.nb_cols = self.nb_cols_portrait or 3
@@ -831,8 +828,8 @@ function MosaicMenu:_recalculateDimen()
 
     -- Set our items target size
     self.item_margin = Screen:scaleBySize(10)
-    self.item_height = math.floor((self.dimen.h - self.others_height - (1+self.nb_rows)*self.item_margin) / self.nb_rows)
-    self.item_width = math.floor((self.dimen.w - (1+self.nb_cols)*self.item_margin) / self.nb_cols)
+    self.item_height = math.floor((self.inner_dimen.h - self.others_height - (1+self.nb_rows)*self.item_margin) / self.nb_rows)
+    self.item_width = math.floor((self.inner_dimen.w - (1+self.nb_cols)*self.item_margin) / self.nb_cols)
     self.item_dimen = Geom:new{
         w = self.item_width,
         h = self.item_height
@@ -846,8 +843,8 @@ function MosaicMenu:_recalculateDimen()
         if corner_mark then
             corner_mark:free()
         end
-        corner_mark = ImageWidget:new{
-            file = "resources/icons/dogear.png",
+        corner_mark = IconWidget:new{
+            icon = "dogear.opaque",
             rotation_angle = BD.mirroredUILayout() and 180 or 270,
             width = corner_mark_size,
             height = corner_mark_size,
@@ -870,7 +867,7 @@ function MosaicMenu:_updateItemsBuildUI()
             local container = self._do_center_partial_rows and CenterContainer or LeftContainer
             table.insert(self.item_group, container:new{
                 dimen = Geom:new{
-                    w = self.dimen.w,
+                    w = self.inner_dimen.w,
                     h = self.item_height
                 },
                 cur_row

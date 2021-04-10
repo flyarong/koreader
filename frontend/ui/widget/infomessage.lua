@@ -31,6 +31,7 @@ local Geom = require("ui/geometry")
 local GestureRange = require("ui/gesturerange")
 local HorizontalGroup = require("ui/widget/horizontalgroup")
 local HorizontalSpan = require("ui/widget/horizontalspan")
+local IconWidget = require("ui/widget/iconwidget")
 local ImageWidget = require("ui/widget/imagewidget")
 local InputContainer = require("ui/widget/container/inputcontainer")
 local MovableContainer = require("ui/widget/container/movablecontainer")
@@ -57,14 +58,19 @@ local InfoMessage = InputContainer:new{
     image_height = nil,  -- The image height if image is used. Keep it nil to use original height.
     -- Whether the icon should be shown. If it is false, self.image will be ignored.
     show_icon = true,
-    icon_file = nil, -- use this file instead of "resources/info-i.png"
-    alpha = false, -- does that icon have an alpha channel?
-    dismiss_callback = function() end,
+    icon = "notice-info",
+    alpha = nil, -- if image or icon have an alpha channel (default to true for icons, false for images
+    dismiss_callback = nil,
     -- In case we'd like to use it to display some text we know a few more things about:
     lang = nil,
     para_direction_rtl = nil,
     auto_para_direction = nil,
-
+    -- Don't call setDirty when closing the widget
+    no_refresh_on_close = nil,
+    -- Only have it painted after this delay (dismissing still works before it's shown)
+    show_delay = nil,
+    -- Set to true when it might be displayed after some processing, to avoid accidental dismissal
+    flush_events_on_show = false,
 }
 
 function InfoMessage:init()
@@ -97,13 +103,12 @@ function InfoMessage:init()
                 image = self.image,
                 width = self.image_width,
                 height = self.image_height,
-                alpha = self.alpha,
+                alpha = self.alpha ~= nil and self.alpha or false, -- default to false
             }
         else
-            image_widget = ImageWidget:new{
-                file = self.icon_file or "resources/info-i.png",
-                scale_for_dpi = true,
-                alpha = self.alpha,
+            image_widget = IconWidget:new{
+                icon = self.icon,
+                alpha = self.alpha == nil and true or self.alpha, -- default to true
             }
         end
     else
@@ -144,6 +149,7 @@ function InfoMessage:init()
     end
     local frame = FrameContainer:new{
         background = Blitbuffer.COLOR_WHITE,
+        radius = Size.radius.window,
         HorizontalGroup:new{
             align = "center",
             image_widget,
@@ -182,9 +188,26 @@ function InfoMessage:init()
             end
         end
     end
+
+    if self.show_delay then
+        -- Don't have UIManager setDirty us yet
+        self.invisible = true
+    end
 end
 
 function InfoMessage:onCloseWidget()
+    if self._delayed_show_action then
+        UIManager:unschedule(self._delayed_show_action)
+        self._delayed_show_action = nil
+    end
+    if self.invisible then
+        -- Still invisible, no setDirty needed
+        return true
+    end
+    if self.no_refresh_on_close then
+        return true
+    end
+
     UIManager:setDirty(nil, function()
         return "ui", self[1][1].dimen
     end)
@@ -192,28 +215,74 @@ function InfoMessage:onCloseWidget()
 end
 
 function InfoMessage:onShow()
-    -- triggered by the UIManager after we got successfully shown (not yet painted)
+    -- triggered by the UIManager after we got successfully show()'n (not yet painted)
+    if self.show_delay and self.invisible then
+        -- Let us be shown after this delay
+        self._delayed_show_action = function()
+            self._delayed_show_action = nil
+            self.invisible = false
+            self:onShow()
+        end
+        UIManager:scheduleIn(self.show_delay, self._delayed_show_action)
+        return true
+    end
+    -- set our region to be dirty, so UImanager will call our paintTo()
     UIManager:setDirty(self, function()
         return "ui", self[1][1].dimen
     end)
+    if self.flush_events_on_show then
+        -- Discard queued and coming up events to avoid accidental dismissal
+        UIManager:discardEvents(true)
+    end
+    -- schedule us to close ourself if timeout provided
     if self.timeout then
-        UIManager:scheduleIn(self.timeout, function() UIManager:close(self) end)
+        UIManager:scheduleIn(self.timeout, function()
+            -- In case we're provided with dismiss_callback, also call it
+            -- on timeout
+            if self.dismiss_callback then
+                self.dismiss_callback()
+                self.dismiss_callback = nil
+            end
+            UIManager:close(self)
+        end)
     end
     return true
 end
 
-function InfoMessage:onAnyKeyPressed()
-    -- triggered by our defined key events
-    self.dismiss_callback()
+function InfoMessage:getVisibleArea()
+    if not self.invisible then
+        return self[1][1].dimen
+    end
+end
+
+function InfoMessage:paintTo(bb, x, y)
+    if self.invisible then
+        return
+    end
+    InputContainer.paintTo(self, bb, x, y)
+end
+
+function InfoMessage:dismiss()
+    if self._delayed_show_action then
+        UIManager:unschedule(self._delayed_show_action)
+        self._delayed_show_action = nil
+    end
+    if self.dismiss_callback then
+        self.dismiss_callback()
+        self.dismiss_callback = nil
+    end
     UIManager:close(self)
+end
+
+function InfoMessage:onAnyKeyPressed()
+    self:dismiss()
     if self.readonly ~= true then
         return true
     end
 end
 
 function InfoMessage:onTapClose()
-    self.dismiss_callback()
-    UIManager:close(self)
+    self:dismiss()
     if self.readonly ~= true then
         return true
     end

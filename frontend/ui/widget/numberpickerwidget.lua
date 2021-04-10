@@ -12,7 +12,6 @@ Example:
         value_step = 1,
         value_hold_step = 4,
         wrap = true,
-        update_callback = function() end,
     }
 --]]
 
@@ -46,7 +45,6 @@ local NumberPickerWidget = InputContainer:new{
     value_table = nil,
     value_index = nil,
     wrap = true,
-    update_callback = function() end,
     -- in case we need calculate number of days in a given month and year
     date_month = nil,
     date_year = nil,
@@ -62,10 +60,8 @@ function NumberPickerWidget:init()
         self.value_index = self.value_index or 1
         self.value = self.value_table[self.value_index]
     end
-    self:update()
-end
 
-function NumberPickerWidget:paintWidget()
+    -- Widget layout
     local bordersize = Size.border.default
     local margin = Size.margin.default
     local button_up = Button:new{
@@ -118,18 +114,19 @@ function NumberPickerWidget:paintWidget()
     local empty_space = VerticalSpan:new{
         width = math.ceil(self.screen_height * 0.01)
     }
-    local value = self.value
+
+    self.formatted_value = self.value
     if not self.value_table then
-        value = string.format(self.precision, value)
+        self.formatted_value = string.format(self.precision, self.formatted_value)
     end
 
     local input_dialog
     local callback_input = nil
     if self.value_table == nil then
-        callback_input =  function()
+        callback_input = function()
             input_dialog = InputDialog:new{
                 title = _("Enter number"),
-                input = self.value,
+                input = self.formatted_value,
                 input_type = "number",
                 buttons = {
                     {
@@ -175,31 +172,27 @@ function NumberPickerWidget:paintWidget()
         end
     end
 
-    local text_value = Button:new{
-        text = tostring(value),
+    self.text_value = Button:new{
+        text = tostring(self.formatted_value),
         bordersize = 0,
         padding = 0,
         text_font_face = self.spinner_face.font,
         text_font_size = self.spinner_face.orig_size,
         width = self.width,
         max_width = self.width,
+        show_parent = self.show_parent,
         callback = callback_input,
     }
-    return VerticalGroup:new{
+
+    local widget_spinner = VerticalGroup:new{
         align = "center",
         button_up,
         empty_space,
-        text_value,
+        self.text_value,
         empty_space,
         button_down,
     }
-end
 
---[[--
-Update.
---]]
-function NumberPickerWidget:update()
-    local widget_spinner = self:paintWidget()
     self.frame = FrameContainer:new{
         bordersize = 0,
         padding = Size.padding.default,
@@ -217,7 +210,22 @@ function NumberPickerWidget:update()
     UIManager:setDirty(self.show_parent, function()
         return "ui", self.dimen
     end)
-    self.update_callback()
+end
+
+--[[--
+Update.
+--]]
+function NumberPickerWidget:update()
+    self.formatted_value = self.value
+    if not self.value_table then
+        self.formatted_value = string.format(self.precision, self.formatted_value)
+    end
+
+    self.text_value:setText(tostring(self.formatted_value), self.width)
+
+    UIManager:setDirty(self.show_parent, function()
+        return "ui", self.dimen
+    end)
 end
 
 --[[--

@@ -10,6 +10,7 @@ local DocumentRegistry = {
     registry = {},
     providers = {},
     filetype_provider = {},
+    mimetype_ext = {},
 }
 
 function DocumentRegistry:addProvider(extension, mimetype, provider, weight)
@@ -21,6 +22,10 @@ function DocumentRegistry:addProvider(extension, mimetype, provider, weight)
         weight = weight or 100,
     })
     self.filetype_provider[extension] = true
+    -- We regard the first extension registered for a mimetype as canonical.
+    -- Provided we order the calls to addProvider() correctly, that means
+    -- epub instead of epub3, etc.
+    self.mimetype_ext[mimetype] = self.mimetype_ext[mimetype] or extension
 end
 
 function DocumentRegistry:getRandomFile(dir, opened, extension)
@@ -53,7 +58,12 @@ end
 --- Returns true if file has provider.
 -- @string file
 -- @treturn boolean
-function DocumentRegistry:hasProvider(file)
+function DocumentRegistry:hasProvider(file, mimetype)
+    if mimetype and self.mimetype_ext[mimetype] then
+        return true
+    end
+    if not file then return false end
+
     local filename_suffix = string.lower(util.getFileNameSuffix(file))
 
     local filetype_provider = G_reader_settings:readSetting("provider") or {}
@@ -62,10 +72,7 @@ function DocumentRegistry:hasProvider(file)
     end
     local DocSettings = require("docsettings")
     if DocSettings:hasSidecarFile(file) then
-        local doc_settings_provider = DocSettings:open(file):readSetting("provider")
-        if doc_settings_provider then
-            return true
-        end
+        return DocSettings:open(file):has("provider")
     end
     return false
 end
@@ -124,7 +131,8 @@ function DocumentRegistry:getProviders(file)
         local added = false
         local suffix = string.sub(file, -string.len(provider.extension) - 1)
         if string.lower(suffix) == "."..provider.extension then
-            for i, prov_prev in ipairs(providers) do
+            for i = #providers, 1, -1 do
+                local prov_prev = providers[i]
                 if prov_prev.provider == provider.provider then
                     if prov_prev.weight >= provider.weight then
                         added = true
@@ -133,7 +141,7 @@ function DocumentRegistry:getProviders(file)
                     end
                 end
             end
-        -- if extension == provider.extension then
+            -- if extension == provider.extension then
             -- stick highest weighted provider at the front
             if not added and #providers >= 1 and provider.weight > providers[1].weight then
                 table.insert(providers, 1, provider)
@@ -179,6 +187,10 @@ function DocumentRegistry:setProvider(file, provider, all)
     end
 end
 
+function DocumentRegistry:mimeToExt(mimetype)
+    return self.mimetype_ext[mimetype]
+end
+
 function DocumentRegistry:openDocument(file, provider)
     -- force a GC, so that any previous document used memory can be reused
     -- immediately by this new document without having to wait for the
@@ -222,7 +234,6 @@ function DocumentRegistry:closeDocument(file)
 end
 
 -- load implementations:
-
 require("document/credocument"):register(DocumentRegistry)
 require("document/pdfdocument"):register(DocumentRegistry)
 require("document/djvudocument"):register(DocumentRegistry)

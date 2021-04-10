@@ -50,6 +50,7 @@ local TextWidget = Widget:new{
     _height = 0,
     _baseline_h = 0,
     _maxlength = 1200,
+    _is_truncated = nil,
 
     -- Additional properties only used when using xtext
     use_xtext = G_reader_settings:nilOrTrue("use_xtext"),
@@ -122,6 +123,7 @@ function TextWidget:updateSize()
         self._length = 0
         return
     end
+    self._is_truncated = false
 
     -- Compute width:
     if self.use_xtext then
@@ -141,7 +143,7 @@ function TextWidget:updateSize()
     -- We never need to draw/size more than one screen width, so limit computation
     -- to that width in case we are given some huge string
     local tsize = RenderText:sizeUtf8Text(0, Screen:getWidth(), self.face, self._text_to_draw, true, self.bold)
-    -- As text length includes last glyph pen "advance" (for positionning
+    -- As text length includes last glyph pen "advance" (for positioning
     -- next char), it's best to use math.floor() instead of math.ceil()
     -- to get rid of a fraction of it in case this text is to be
     -- horizontally centered
@@ -170,6 +172,7 @@ function TextWidget:updateSize()
         -- smaller than max_width when dropping the truncated glyph).
         tsize = RenderText:sizeUtf8Text(0, self.max_width, self.face, self._text_to_draw, true, self.bold)
         self._length = math.floor(tsize.x)
+        self._is_truncated = true
     end
 end
 dbg:guard(TextWidget, "updateSize",
@@ -227,6 +230,7 @@ function TextWidget:_measureWithXText()
                 self._shape_idx_to_substitute_with_ellipsis = self._shape_end
             end
         end
+        self._is_truncated = true
     end
 end
 
@@ -292,6 +296,11 @@ end
 function TextWidget:getWidth()
     self:updateSize()
     return self._length
+end
+
+function TextWidget:isTruncated()
+    self:updateSize()
+    return self._is_truncated
 end
 
 function TextWidget:getBaseline()
@@ -363,9 +372,11 @@ function TextWidget:paintTo(bb, x, y)
 end
 
 function TextWidget:free()
+    --print("TextWidget:free on", self)
     -- Allow not waiting until Lua gc() to cleanup C XText malloc'ed stuff
     if self._xtext then
         self._xtext:free()
+        self._xtext = nil
     end
 end
 

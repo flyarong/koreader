@@ -37,7 +37,10 @@ local function buildEntry(input_time, input_file)
                 -- we fallback to it no sidecar file)
                 last_read_ts = DocSettings:getLastSaveTime(file_path) or input_time
             end
-            return util.secondsToDate(last_read_ts, G_reader_settings:nilOrTrue("twelve_hour_clock"))
+            return util.secondsToDate(last_read_ts, G_reader_settings:isTrue("twelve_hour_clock"))
+        end,
+        select_enabled_func = function()
+            return lfs.attributes(file_path, "mode") == "file"
         end,
         callback = function()
             local ReaderUI = require("apps/reader/readerui")
@@ -192,7 +195,7 @@ function ReadHistory:getPreviousFile(current_file)
 end
 
 function ReadHistory:fileDeleted(path)
-    if G_reader_settings:readSetting("autoremove_deleted_items_from_history") then
+    if G_reader_settings:isTrue("autoremove_deleted_items_from_history") then
         self:removeItemByPath(path)
     else
         -- Make it dimed
@@ -207,7 +210,7 @@ function ReadHistory:fileDeleted(path)
 end
 
 function ReadHistory:fileSettingsPurged(path)
-    if G_reader_settings:readSetting("autoremove_deleted_items_from_history") then
+    if G_reader_settings:isTrue("autoremove_deleted_items_from_history") then
         -- Also remove it from history on purge when that setting is enabled
         self:removeItemByPath(path)
     end
@@ -263,10 +266,10 @@ function ReadHistory:removeItem(item, idx)
     self:ensureLastFile()
 end
 
-function ReadHistory:addItem(file)
+function ReadHistory:addItem(file, ts)
     assert(self ~= nil)
     if file ~= nil and lfs.attributes(file, "mode") == "file" then
-        local now = os.time()
+        local now = ts or os.time()
         table.insert(self.hist, 1, buildEntry(now, file))
         --- @todo (zijiehe): We do not need to sort if we can use binary insert and
         -- binary search.

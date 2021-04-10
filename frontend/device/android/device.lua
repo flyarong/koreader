@@ -60,6 +60,8 @@ local external = require("device/thirdparty"):new{
         { "GoldenFree", "GoldenDict Free", false, "mobi.goldendict.android.free", "send" },
         { "GoldenPro", "GoldenDict Pro", false, "mobi.goldendict.android", "send" },
         { "Kiwix", "Kiwix", false, "org.kiwix.kiwixmobile", "text" },
+        { "LookUp", "Look Up", false, "gaurav.lookup", "send" },
+        { "LookUpPro", "Look Up Pro", false, "gaurav.lookuppro", "send" },
         { "Mdict", "Mdict", false, "cn.mdict", "send" },
         { "QuickDic", "QuickDic", false, "de.reimardoeffinger.quickdic", "quickdic" },
     },
@@ -93,8 +95,8 @@ local Device = Generic:new{
         return android.openLink(link) == 0
     end,
     canImportFiles = function() return android.app.activity.sdkVersion >= 19 end,
+    hasExternalSD = function() return android.getExternalSdPath() end,
     importFile = function(path) android.importFile(path) end,
-    isValidPath = function(path) return android.isPathInsideSandbox(path) end,
     canShareText = yes,
     doShareText = function(text) android.sendText(text) end,
 
@@ -103,24 +105,25 @@ local Device = Generic:new{
     doExternalDictLookup = function (self, text, method, callback)
         external.when_back_callback = callback
         local _, app, action = external:checkMethod("dict", method)
-        if app and action then
+        if action then
             android.dictLookup(text, app, action)
         end
     end,
 
-
-    --[[
-    Disable jit on some modules on android to make koreader on Android more stable.
-
-    The strategy here is that we only use precious mcode memory (jitting)
-    on deep loops like the several blitting methods in blitbuffer.lua and
-    the pixel-copying methods in mupdf.lua. So that a small amount of mcode
-    memory (64KB) allocated when koreader is launched in the android.lua
-    is enough for the program and it won't need to jit other parts of lua
-    code and thus won't allocate mcode memory any more which by our
-    observation will be harder and harder as we run koreader.
-    ]]--
-    should_restrict_JIT = true,
+    -- Android is very finicky, and the LuaJIT allocator has a tremendously hard time getting the system
+    -- to allocate memory for it in the very specific memory range it requires to store generated code (mcode).
+    -- Failure to do so at runtime (mcode_alloc) will *tank* performance
+    -- (much worse than if the JIT were simply disabled).
+    -- The first line of defense is left to android-luajit-launcher,
+    -- which will try to grab the full mcode region in one go right at startup.
+    -- The second line of defense is *this* flag, which disables the JIT in a few code-hungry modules,
+    -- but not necessarily performance critical ones, to hopefully limit the amount of mcode memory
+    -- required for those modules where it *really* matters (e.g., ffi/blitbuffer.lua).
+    -- This is also why we try to actually avoid entering actual loops in the Lua blitter on Android,
+    -- and instead attempt to do most of everything via the C implementation.
+    -- NOTE: Since https://github.com/koreader/android-luajit-launcher/pull/283, we've patched LuaJIT
+    --       to ensure that the initial mcode alloc works, and sticks around, which is why this is no longer enabled.
+    should_restrict_JIT = false,
 }
 
 function Device:init()
@@ -140,6 +143,8 @@ function Device:init()
                 or ev.code == C.APP_CMD_INIT_WINDOW
                 or ev.code == C.APP_CMD_WINDOW_REDRAW_NEEDED then
                 this.device.screen:_updateWindow()
+            elseif ev.code == C.APP_CMD_TERM_WINDOW then
+                this.device.input:resetState()
             elseif ev.code == C.APP_CMD_CONFIG_CHANGED then
                 -- orientation and size changes
                 if android.screen.width ~= android.getScreenWidth()
@@ -194,6 +199,12 @@ function Device:init()
                         end)
                     end
                 end
+            elseif ev.code == C.AEVENT_POWER_CONNECTED then
+                local Event = require("ui/event")
+                UIManager:broadcastEvent(Event:new("Charging"))
+            elseif ev.code == C.AEVENT_POWER_DISCONNECTED then
+                local Event = require("ui/event")
+                UIManager:broadcastEvent(Event:new("NotCharging"))
             end
         end,
         hasClipboardText = function()
@@ -320,6 +331,8 @@ function Device:toggleFullscreen()
     elseif api < 19 and api >= 17 then
         local width = android.getScreenWidth()
         local height = android.getScreenHeight()
+        -- NOTE: Since we don't do HW rotation here, this should always match width
+        local available_width = android.getScreenAvailableWidth()
         local available_height = android.getScreenAvailableHeight()
         local is_fullscreen = android.isFullscreen()
         android.setFullscreen(not is_fullscreen)
@@ -328,7 +341,7 @@ function Device:toggleFullscreen()
         if is_fullscreen then
             self:setViewport(0, 0, width, height)
         else
-            self:setViewport(0, 0, width, available_height)
+            self:setViewport(0, 0, available_width, available_height)
         end
     else
         logger.dbg("ignoring fullscreen toggle, reason: legacy api " .. api)
@@ -376,6 +389,10 @@ function Device:canExecuteScript(file)
     end
 end
 
+function Device:isValidPath(path)
+    return android.isPathInsideSandbox(path)
+end
+
 --swallow all events
 local function processEvents()
     local events = ffi.new("int[1]")
@@ -384,9 +401,9 @@ local function processEvents()
     if poll_state >= 0 then
         if source[0] ~= nil then
             if source[0].id == C.LOOPER_ID_MAIN then
-                local cmd = C.android_app_read_cmd(android.app)
-                C.android_app_pre_exec_cmd(android.app, cmd)
-                C.android_app_post_exec_cmd(android.app, cmd)
+                local cmd = android.glue.android_app_read_cmd(android.app)
+                android.glue.android_app_pre_exec_cmd(android.app, cmd)
+                android.glue.android_app_post_exec_cmd(android.app, cmd)
             elseif source[0].id == C.LOOPER_ID_INPUT then
                 local event = ffi.new("AInputEvent*[1]")
                 while android.lib.AInputQueue_getEvent(android.app.inputQueue, event) >= 0 do
@@ -429,6 +446,10 @@ function Device:showLightDialog()
             self.powerd:setWarmth(self.powerd.fl_warmth)
         end
     end
+end
+
+function Device:untar(archive, extract_to)
+    return android.untar(archive, extract_to)
 end
 
 android.LOGI(string.format("Android %s - %s (API %d) - flavor: %s",

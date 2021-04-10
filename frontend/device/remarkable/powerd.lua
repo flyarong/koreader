@@ -1,12 +1,7 @@
 local BasePowerD = require("device/generic/powerd")
 
--- TODO older firmware doesn't have the -0 on the end of the file path
-local base_path = '/sys/class/power_supply/bq27441-0/'
-
 local Remarkable_PowerD = BasePowerD:new{
     is_charging = nil,
-    capacity_file = base_path .. 'capacity',
-    status_file = base_path .. 'status'
 }
 
 function Remarkable_PowerD:init()
@@ -24,7 +19,7 @@ function Remarkable_PowerD:getCapacityHW()
 end
 
 function Remarkable_PowerD:isChargingHW()
-    return self:read_str_file(self.status_file) == "Charging\n"
+    return self:read_str_file(self.status_file) == "Charging"
 end
 
 return Remarkable_PowerD

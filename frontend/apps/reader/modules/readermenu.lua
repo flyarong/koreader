@@ -26,22 +26,22 @@ function ReaderMenu:init()
         },
         -- items in top menu
         navi = {
-            icon = "resources/icons/appbar.page.corner.bookmark.png",
+            icon = "appbar.navigation",
         },
         typeset = {
-            icon = "resources/icons/appbar.page.text.png",
+            icon = "appbar.typeset",
         },
         setting = {
-            icon = "resources/icons/appbar.settings.png",
+            icon = "appbar.settings",
         },
         tools = {
-            icon = "resources/icons/appbar.tools.png",
+            icon = "appbar.tools",
         },
         search = {
-            icon = "resources/icons/appbar.magnify.browse.png",
+            icon = "appbar.search",
         },
         filemanager = {
-            icon = "resources/icons/appbar.cabinet.files.png",
+            icon = "appbar.filebrowser",
             remember = false,
             callback = function()
                 self:onTapCloseMenu()
@@ -50,7 +50,7 @@ function ReaderMenu:init()
             end,
         },
         main = {
-            icon = "resources/icons/menu-icon.png",
+            icon = "appbar.menu",
         }
     }
 
@@ -71,8 +71,9 @@ function ReaderMenu:init()
             end
         end
     end
-    self.activation_menu = G_reader_settings:readSetting("activate_menu")
-    if self.activation_menu == nil then
+    if G_reader_settings:has("activate_menu") then
+        self.activation_menu = G_reader_settings:readSetting("activate_menu")
+    else
         self.activation_menu = "swipe_tap"
     end
 end
@@ -102,6 +103,18 @@ function ReaderMenu:onReaderReady()
             handler = function(ges) return self:onTapShowMenu(ges) end,
         },
         {
+            id = "readermenu_ext_tap",
+            ges = "tap",
+            screen_zone = {
+                ratio_x = DTAP_ZONE_MENU_EXT.x, ratio_y = DTAP_ZONE_MENU_EXT.y,
+                ratio_w = DTAP_ZONE_MENU_EXT.w, ratio_h = DTAP_ZONE_MENU_EXT.h,
+            },
+            overrides = {
+                "readermenu_tap",
+            },
+            handler = function(ges) return self:onTapShowMenu(ges) end,
+        },
+        {
             id = "readermenu_swipe",
             ges = "swipe",
             screen_zone = {
@@ -115,6 +128,18 @@ function ReaderMenu:onReaderReady()
             handler = function(ges) return self:onSwipeShowMenu(ges) end,
         },
         {
+            id = "readermenu_ext_swipe",
+            ges = "swipe",
+            screen_zone = {
+                ratio_x = DTAP_ZONE_MENU_EXT.x, ratio_y = DTAP_ZONE_MENU_EXT.y,
+                ratio_w = DTAP_ZONE_MENU_EXT.w, ratio_h = DTAP_ZONE_MENU_EXT.h,
+            },
+            overrides = {
+                "readermenu_swipe",
+            },
+            handler = function(ges) return self:onSwipeShowMenu(ges) end,
+        },
+        {
             id = "readermenu_pan",
             ges = "pan",
             screen_zone = {
@@ -124,6 +149,18 @@ function ReaderMenu:onReaderReady()
             overrides = {
                 "rolling_pan",
                 "paging_pan",
+            },
+            handler = function(ges) return self:onSwipeShowMenu(ges) end,
+        },
+        {
+            id = "readermenu_ext_pan",
+            ges = "pan",
+            screen_zone = {
+                ratio_x = DTAP_ZONE_MENU_EXT.x, ratio_y = DTAP_ZONE_MENU_EXT.y,
+                ratio_w = DTAP_ZONE_MENU_EXT.w, ratio_h = DTAP_ZONE_MENU_EXT.h,
+            },
+            overrides = {
+                "readermenu_pan",
             },
             handler = function(ges) return self:onSwipeShowMenu(ges) end,
         },
@@ -154,16 +191,16 @@ function ReaderMenu:setUpdateItemTable()
             text = _("Exclude this book's cover from screensaver"),
             enabled_func = function()
                 return not (self.ui == nil or self.ui.document == nil)
-                    and G_reader_settings:readSetting('screensaver_type') == "cover"
+                    and G_reader_settings:readSetting("screensaver_type") == "cover"
             end,
             checked_func = function()
-                return self.ui and self.ui.doc_settings and self.ui.doc_settings:readSetting("exclude_screensaver") == true
+                return self.ui and self.ui.doc_settings and self.ui.doc_settings:isTrue("exclude_screensaver")
             end,
             callback = function()
-                if Screensaver:excluded() then
-                    self.ui.doc_settings:saveSetting("exclude_screensaver", false)
+                if Screensaver:isExcluded() then
+                    self.ui.doc_settings:makeFalse("exclude_screensaver")
                 else
-                    self.ui.doc_settings:saveSetting("exclude_screensaver", true)
+                    self.ui.doc_settings:makeTrue("exclude_screensaver")
                 end
                 self.ui:saveSettings()
             end,
@@ -259,8 +296,21 @@ dbg:guard(ReaderMenu, 'setUpdateItemTable',
         end
     end)
 
-function ReaderMenu:exitOrRestart(callback)
+function ReaderMenu:exitOrRestart(callback, force)
     if self.menu_container then self:onTapCloseMenu() end
+
+    -- Only restart sets a callback, which suits us just fine for this check ;)
+    if callback and not force and not Device:isStartupScriptUpToDate() then
+        UIManager:show(ConfirmBox:new{
+            text = _("KOReader's startup script has been updated. You'll need to completely exit KOReader to finalize the update."),
+            ok_text = _("Restart anyway"),
+            ok_callback = function()
+                self:exitOrRestart(callback, true)
+            end,
+        })
+        return
+    end
+
     UIManager:nextTick(function()
         self.ui:onClose()
         if callback ~= nil then

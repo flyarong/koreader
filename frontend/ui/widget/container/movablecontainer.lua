@@ -13,7 +13,7 @@ position, Hold will toggle between full opacity and 0.7 transparency.
 This container's content is expected to not change its width and height.
 ]]
 
-local BlitBuffer = require("ffi/blitbuffer")
+local Blitbuffer = require("ffi/blitbuffer")
 local Device = require("device")
 local Geom = require("ui/geometry")
 local GestureRange = require("ui/gesturerange")
@@ -46,6 +46,9 @@ local MovableContainer = InputContainer:new{
     -- Original painting position from outer widget
     _orig_x = nil,
     _orig_y = nil,
+
+    -- We cache a compose canvas for alpha handling
+    compose_bb = nil,
 }
 
 function MovableContainer:init()
@@ -113,17 +116,39 @@ function MovableContainer:paintTo(bb, x, y)
     self.dimen.y = y + self._moved_offset_y
 
     if self.alpha then
-        -- Create private blitbuffer for our child widget to paint to
-        local private_bb = BlitBuffer.new(bb:getWidth(), bb:getHeight(), bb:getType())
-        private_bb:fill(BlitBuffer.COLOR_WHITE) -- for round corners' outside to not stay black
-        self[1]:paintTo(private_bb, self.dimen.x, self.dimen.y)
-        -- And blend our private blitbuffer over the original bb
-        bb:addblitFrom(private_bb, self.dimen.x, self.dimen.y, self.dimen.x, self.dimen.y,
-            self.dimen.w, self.dimen.h, self.alpha)
-        private_bb:free()
+        -- Create/Recreate the compose cache if we changed screen geometry
+        if not self.compose_bb
+            or self.compose_bb:getWidth() ~= bb:getWidth()
+            or self.compose_bb:getHeight() ~= bb:getHeight()
+        then
+            if self.compose_bb then
+                self.compose_bb:free()
+            end
+            -- create a canvas for our child widget to paint to
+            self.compose_bb = Blitbuffer.new(bb:getWidth(), bb:getHeight(), bb:getType())
+            -- fill it with our usual background color
+            self.compose_bb:fill(Blitbuffer.COLOR_WHITE)
+        end
+
+        -- now, compose our child widget's content on our canvas
+        -- NOTE: Unlike AlphaContainer, we aim to support interactive widgets.
+        --       Most InputContainer-based widgets register their touchzones at paintTo time,
+        --       and they rely on the target coordinates fed to paintTo for proper on-screen positioning.
+        --       As such, we have to compose on a target bb sized canvas, at the expected coordinates.
+        self[1]:paintTo(self.compose_bb, self.dimen.x, self.dimen.y)
+
+        -- and finally blit the canvas to the target blitbuffer at the requested opacity level
+        bb:addblitFrom(self.compose_bb, self.dimen.x, self.dimen.y, self.dimen.x, self.dimen.y, self.dimen.w, self.dimen.h, self.alpha)
     else
         -- No alpha, just paint
         self[1]:paintTo(bb, self.dimen.x, self.dimen.y)
+    end
+end
+
+function MovableContainer:onCloseWidget()
+    if self.compose_bb then
+        self.compose_bb:free()
+        self.compose_bb = nil
     end
 end
 
@@ -189,6 +214,9 @@ end
 
 function MovableContainer:onMovableSwipe(_, ges)
     logger.dbg("MovableContainer:onMovableSwipe", ges)
+    if not self.dimen then -- not yet painted
+        return false
+    end
     if not ges.pos:intersectWith(self.dimen) then
         -- with swipe, ges.pos is swipe's start position, which should
         -- be on us to consider it
@@ -216,6 +244,9 @@ function MovableContainer:onMovableTouch(_, ges)
     -- First "pan" event may already be outsise us, we need to
     -- remember any "touch" event on us prior to "pan"
     logger.dbg("MovableContainer:onMovableTouch", ges)
+    if not self.dimen then -- not yet painted
+        return false
+    end
     if ges.pos:intersectWith(self.dimen) then
         self._touch_pre_pan_was_inside = true
         self._move_relative_x = ges.pos.x
@@ -228,6 +259,9 @@ end
 
 function MovableContainer:onMovableHold(_, ges)
     logger.dbg("MovableContainer:onMovableHold", ges)
+    if not self.dimen then -- not yet painted
+        return false
+    end
     if ges.pos:intersectWith(self.dimen) then
         self._moving = true -- start of pan
         self._move_relative_x = ges.pos.x
@@ -239,6 +273,9 @@ end
 
 function MovableContainer:onMovableHoldPan(_, ges)
     logger.dbg("MovableContainer:onMovableHoldPan", ges)
+    if not self.dimen then -- not yet painted
+        return false
+    end
     -- we may sometimes not see the "hold" event
     if ges.pos:intersectWith(self.dimen) or self._moving or self._touch_pre_pan_was_inside then
         self._touch_pre_pan_was_inside = false -- reset it
@@ -250,6 +287,9 @@ end
 
 function MovableContainer:onMovableHoldRelease(_, ges)
     logger.dbg("MovableContainer:onMovableHoldRelease", ges)
+    if not self.dimen then -- not yet painted
+        return false
+    end
     if self._moving or self._touch_pre_pan_was_inside then
         self._moving = false
         if not self._move_relative_x or not self._move_relative_y then
@@ -273,6 +313,9 @@ end
 
 function MovableContainer:onMovablePan(_, ges)
     logger.dbg("MovableContainer:onMovablePan", ges)
+    if not self.dimen then -- not yet painted
+        return false
+    end
     if ges.pos:intersectWith(self.dimen) or self._moving or self._touch_pre_pan_was_inside then
         self._touch_pre_pan_was_inside = false -- reset it
         self._moving = true
@@ -285,6 +328,9 @@ end
 
 function MovableContainer:onMovablePanRelease(_, ges)
     logger.dbg("MovableContainer:onMovablePanRelease", ges)
+    if not self.dimen then -- not yet painted
+        return false
+    end
     if self._moving then
         self:_moveBy(self._move_relative_x, self._move_relative_y)
         self._moving = false

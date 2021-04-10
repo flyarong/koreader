@@ -113,20 +113,30 @@ function RadioButton:onTapCheckButton()
         if G_reader_settings:isFalse("flash_ui") then
             self.callback()
         else
-            -- While I'd like to only flash the button itself, we have to make do with flashing the full width of the TextWidget...
+            -- c.f., ui/widget/iconbutton for the canonical documentation about the flash_ui code flow
+
+            -- Highlight
+            --
+            -- self.frame's width is based on self.width, so we effectively flash the full width, not only the button/text's width.
+            -- This matches the behavior of Menu & TouchMenu.
             self.frame.invert = true
-            UIManager:widgetRepaint(self.frame, self.dimen.x, self.dimen.y)
-            UIManager:setDirty(nil, function()
-                return "fast", self.dimen
-            end)
-            UIManager:tickAfterNext(function()
-                self.callback()
-                self.frame.invert = false
-                UIManager:widgetRepaint(self.frame, self.dimen.x, self.dimen.y)
-                UIManager:setDirty(nil, function()
-                    return "fast", self.dimen
-                end)
-            end)
+            UIManager:widgetInvert(self.frame, self.dimen.x, self.dimen.y)
+            UIManager:setDirty(nil, "fast", self.dimen)
+
+            UIManager:forceRePaint()
+            UIManager:yieldToEPDC()
+
+            -- Unhighlight
+            --
+            self.frame.invert = false
+            UIManager:widgetInvert(self.frame, self.dimen.x, self.dimen.y)
+            UIManager:setDirty(nil, "ui", self.dimen)
+
+            -- Callback
+            --
+            self.callback()
+
+            UIManager:forceRePaint()
         end
     elseif self.tap_input then
         self:onInput(self.tap_input)
@@ -151,18 +161,16 @@ function RadioButton:check(callback)
     self._radio_button = self._checked_widget
     self.checked = true
     self:update()
-    UIManager:setDirty(self.parent, function()
-        return "fast", self.dimen
-    end)
+    UIManager:widgetRepaint(self.frame, self.dimen.x, self.dimen.y)
+    UIManager:setDirty(nil, "ui", self.dimen)
 end
 
 function RadioButton:unCheck()
     self._radio_button = self._unchecked_widget
     self.checked = false
     self:update()
-    UIManager:setDirty(self.parent, function()
-        return "fast", self.dimen
-    end)
+    UIManager:widgetRepaint(self.frame, self.dimen.x, self.dimen.y)
+    UIManager:setDirty(nil, "ui", self.dimen)
 end
 
 return RadioButton

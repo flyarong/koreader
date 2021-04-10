@@ -6,6 +6,7 @@
 local BD = require("ui/bidi")
 local CalibreMetadata = require("metadata")
 local ConfirmBox = require("ui/widget/confirmbox")
+local Device = require("device")
 local FFIUtil = require("ffi/util")
 local InputContainer = require("ui/widget/container/inputcontainer")
 local InputDialog = require("ui/widget/inputdialog")
@@ -25,7 +26,7 @@ require("ffi/zeromq_h")
 local extensions = require("extensions")
 local function getExtensionPathLengths()
     local t = {}
-    for _, v in pairs(extensions) do
+    for _, v in ipairs(extensions) do
         -- magic number from calibre, see
         -- https://github.com/koreader/koreader/pull/6177#discussion_r430753964
         t[v] = 37
@@ -42,7 +43,11 @@ end
 local function updateDir(dir)
     local FileManager = require("apps/filemanager/filemanager")
     if FileManager:getCurrentDir() == dir then
-        FileManager.instance:reinit(dir)
+        -- getCurrentDir() will return nil (well, nothing, technically) if there isn't an FM instance, so,
+        -- unless we were passed a nil, this is technically redundant.
+        if FileManager.instance then
+            FileManager.instance:reinit(dir)
+        end
     end
 end
 
@@ -165,7 +170,13 @@ end
 
 -- will callback initCalibreMQ if inbox is confirmed to be set
 function CalibreWireless:setInboxDir(host, port)
+    local force_chooser_dir
+    if Device:isAndroid() then
+        force_chooser_dir = Device.home_dir
+    end
+
     local calibre_device = self
+
     require("ui/downloadmgr"):new{
         onConfirm = function(inbox)
             local driver = CalibreMetadata:getDeviceInfo(inbox, "device_name")
@@ -200,7 +211,7 @@ Do you want to continue? ]]), driver),
                 save_and_resume()
             end
         end,
-    }:chooseDir()
+    }:chooseDir(force_chooser_dir)
 end
 
 function CalibreWireless:connect()
@@ -248,10 +259,14 @@ end
 function CalibreWireless:disconnect()
     logger.info("disconnect from calibre")
     self.connect_message = false
-    self.calibre_socket:stop()
-    UIManager:removeZMQ(self.calibre_messagequeue)
-    self.calibre_socket = nil
-    self.calibre_messagequeue = nil
+    if self.calibre_socket then
+        self.calibre_socket:stop()
+        self.calibre_socket = nil
+    end
+    if self.calibre_messagequeue then
+        UIManager:removeZMQ(self.calibre_messagequeue)
+        self.calibre_messagequeue = nil
+    end
     CalibreMetadata:clean()
 end
 

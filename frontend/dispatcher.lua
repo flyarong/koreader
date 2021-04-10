@@ -23,11 +23,13 @@ Each setting contains:
 * args: allowed values for string.
 * toggle: display name for args
 * separator: put a separator after in the menu list
+* configurable: can be parsed from cre/kopt and used to set document.configurable. Should not be set manualy
 --]]--
 
 local CreOptions = require("ui/data/creoptions")
 local Device = require("device")
 local Event = require("ui/event")
+local ReaderZooming = require("apps/reader/modules/readerzooming")
 local Screen = require("device").screen
 local UIManager = require("ui/uimanager")
 local _ = require("gettext")
@@ -83,6 +85,7 @@ local settingsList = {
     set_no_flash_on_second_chapter_page = { category="string", event="SetNoFlashOnSecondChapterPage", title=_("Never flash on chapter's 2nd page"), device=true, condition=Device:hasEinkScreen(), args={true, false}, toggle={_("On"), _("Off")},},
     toggle_no_flash_on_second_chapter_page = { category="none", event="ToggleNoFlashOnSecondChapterPage", title=_("Toggle flashing on chapter's 2nd page"), device=true, condition=Device:hasEinkScreen(), separator=true,},
     favorites = { category="none", event="ShowColl", arg="favorites", title=_("Favorites"), device=true,},
+    screenshot = { category="none", event="Screenshot", title=_("Screenshot"), device=true, separator=true,},
 
     -- filemanager settings
     folder_up = { category="none", event="FolderUp", title=_("Folder up"), filemanager=true},
@@ -113,7 +116,7 @@ local settingsList = {
     book_cover = { category="none", event="ShowBookCover", title=_("Book cover"), rolling=true, paging=true, separator=true,},
     show_config_menu = { category="none", event="ShowConfigMenu", title=_("Show bottom menu"), rolling=true, paging=true,},
     toggle_bookmark = { category="none", event="ToggleBookmark", title=_("Toggle bookmark"), rolling=true, paging=true,},
-    toggle_inverse_reading_order = { category="none", event="ToggleReadingOrder", title=_("Toggle page turn direction"), rolling=true, paging=true,},
+    toggle_inverse_reading_order = { category="none", event="ToggleReadingOrder", title=_("Toggle page turn direction"), rolling=true, paging=true, separator=true},
     cycle_highlight_action = { category="none", event="CycleHighlightAction", title=_("Cycle highlight action"), rolling=true, paging=true,},
     cycle_highlight_style = { category="none", event="CycleHighlightStyle", title=_("Cycle highlight style"), rolling=true, paging=true,},
     page_jmp = { category="absolutenumber", event="GotoViewRel", min=-100, max=100, title=_("Go %1 pages"), rolling=true, paging=true,},
@@ -126,7 +129,8 @@ local settingsList = {
     -- paging reader settings
     toggle_page_flipping = { category="none", event="TogglePageFlipping", title=_("Toggle page flipping"), paging=true,},
     toggle_reflow = { category="none", event="ToggleReflow", title=_("Toggle reflow"), paging=true,},
-    zoom = { category="string", event="SetZoomMode", title=_("Zoom to"), args={"contentwidth", "contentheight", "pagewidth", "pageheight", "column", "content", "page"}, toggle={"content width", "content height", "page width", "page height", "column", "content", "page"}, paging=true,},
+    zoom = { category="string", event="SetZoomMode", title=_("Zoom mode"), args=ReaderZooming.available_zoom_modes, toggle=ReaderZooming.available_zoom_modes, paging=true,},
+    zoom_factor_change = {category="none", event="ZoomFactorChange", title=_("Change zoom factor"), paging=true, separator=true},
 
     -- parsed from CreOptions
     -- the rest of the table elements are built from their counterparts in CreOptions
@@ -207,6 +211,7 @@ local dispatcher_menu_order = {
     "toggle_wifi",
 
     "rotation_mode",
+    "screenshot",
 
     -- filemanager
     "folder_up",
@@ -252,6 +257,7 @@ local dispatcher_menu_order = {
     "toggle_reflow",
     "toggle_inverse_reading_order",
     "zoom",
+    "zoom_factor_change",
     "cycle_highlight_action",
     "cycle_highlight_style",
     "panel_zoom_toggle",
@@ -284,6 +290,9 @@ function Dispatcher:init()
         for y=1,#base[i].options do
             local option = base[i].options[y]
             if settingsList[option.name] ~= nil then
+                if option.name ~= nil and option.values ~= nil then
+                    settingsList[option.name].configurable = {name = option.name, values = option.values}
+                end
                 if settingsList[option.name].event == nil then
                     settingsList[option.name].event = option.event
                 end
@@ -407,7 +416,7 @@ function Dispatcher:addItem(caller, menu, location, settings, section)
                             value = location[settings] ~= nil and location[settings][k] or settingsList[k].default or 0,
                             value_min = settingsList[k].min,
                             value_step = 1,
-                            value_hold_step = 2,
+                            value_hold_step = 5,
                             value_max = settingsList[k].max,
                             default_value = 0,
                             title_text = Dispatcher:getNameFromItem(k, location, settings),
@@ -449,7 +458,7 @@ function Dispatcher:addItem(caller, menu, location, settings, section)
                             value = location[settings] ~= nil and location[settings][k] or 0,
                             value_min = settingsList[k].min,
                             value_step = 1,
-                            value_hold_step = 2,
+                            value_hold_step = 5,
                             value_max = settingsList[k].max,
                             default_value = 0,
                             title_text = Dispatcher:getNameFromItem(k, location, settings),
@@ -613,6 +622,15 @@ function Dispatcher:execute(ui, settings, gesture)
             if settingsList[k].category == "incrementalnumber" then
                 local arg = v ~= 0 and v or gesture or 0
                 ui:handleEvent(Event:new(settingsList[k].event, arg))
+            end
+            if ui.document and settingsList[k].configurable then
+                local value = v
+                if type(v) ~= "number" then
+                    for i, r in ipairs(settingsList[k].args) do
+                        if v == r then value = settingsList[k].configurable.values[i] break end
+                    end
+                end
+                ui.document.configurable[settingsList[k].configurable.name] = value
             end
         end
     end
